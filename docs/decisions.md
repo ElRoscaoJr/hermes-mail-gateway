@@ -50,3 +50,24 @@
 - Why: These defaults minimize scope while preserving reuse and keep the first real-provider verification focused on the already-working account path.
 - Alternatives rejected: Starting with three separate OAuth implementations; exposing mail access to every Hermes profile.
 - Supersedes: none
+
+## D-008 — Phase 2 technical foundation
+- Date / phase: 2026-09-07 / Phase 2
+- Decision: Use a strict TypeScript application-layer architecture with four MCP tools, SQLite repositories/migrations, mature IMAP/SMTP/MIME adapters, host keychain/Secret Service credential references, and a single systemd user service on Debian 13.
+- Why: Separating the MCP boundary, use cases, durable state machine, provider adapters, and security policy keeps provider failures and model-controlled inputs away from the reliability core.
+- Alternatives rejected: Protocol implementation from scratch; direct tool-to-provider calls; in-memory send state; remote/multi-user deployment in v1.
+- Supersedes: none
+
+## D-009 — Phase 2 outbox and verification contract
+- Date / phase: 2026-09-07 / Phase 2
+- Decision: A prepared message is immutable, receives its Message-ID before the SQLite transaction commits, and can become confirmed only through exact Message-ID verification in the configured Sent location. `OUTCOME_UNKNOWN` and `SENT_UNVERIFIED` never trigger an automatic resend.
+- Why: This is the smallest enforceable contract that prevents duplicate sends and duplicate Sent copies after ambiguous SMTP/provider behavior.
+- Alternatives rejected: Subject/time matching as confirmation; SMTP acknowledgement alone; automatic retry after timeout; gateway APPEND for Gmail/Zoho.
+- Supersedes: none
+
+## D-010 — Phase 2 dependency pins
+- Date / phase: 2026-09-07 / Phase 2
+- Decision: Initial implementation pins Node.js 24.20.0, TypeScript 7.0.2, MCP SDK 1.30.0, ImapFlow 2.0.0, Nodemailer 10.0.1, mailparser 3.9.23, Zod 4.5.4, and better-sqlite3 13.0.3; the generated lockfile is authoritative after the scaffold.
+- Why: Reproducible builds and explicit dependency review are release requirements for an email-capable service.
+- Alternatives rejected: Floating `latest` ranges and runtime downloads.
+- Supersedes: none
