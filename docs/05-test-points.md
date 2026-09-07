@@ -49,6 +49,7 @@ Real-provider, mailbox, real-keychain, and systemd tests are intentionally defer
 - [x] Thread and attachment query operations return `UNSUPPORTED_OPERATION`.
 - [x] `mailPrepare` delegates durable asynchronous preparation without returning raw MIME.
 - [x] `mailExecute` enforces message ownership, durably confirms exact Sent matches with no-send `verifyOnly`, and delegates normal execution to `executeOnce` with stored MIME.
+- [x] SMTP submission outcomes are classified before Sent verification: SMTP throw/`UNKNOWN` remains `OUTCOME_UNKNOWN`; `ACKNOWLEDGED` followed by verification false/exception becomes `SENT_UNVERIFIED` without retry.
 - [x] Integration tests use SQLite plus fake mailbox/IMAP and SMTP adapters; no real mail, keychain, systemd, credentials, or sends are used.
 - [x] Compiled stdio startup is smoke-tested with an MCP `initialize` frame and with absent configuration; diagnostics stay off stdout. The child-process checks skip only when the host sandbox denies process creation.
 - [x] `npm run typecheck`, `npm test`, and `npm run build` pass with 9 test files and 0 failures.
