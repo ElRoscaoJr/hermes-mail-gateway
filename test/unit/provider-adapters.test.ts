@@ -63,6 +63,13 @@ test("SMTP adapter passes the explicit envelope with raw MIME", async () => {
   assert.deepEqual(options, { raw: Buffer.from("stored raw MIME"), envelope: { from: "sender@example.test", to: ["recipient@example.test"] } });
 });
 
+test("SMTP adapter resolves its independent credential reference", async () => {
+  let requested: string | undefined;
+  const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async (reference) => { requested = reference; return { username: "user", password: "secret" }; } }, transport: { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }) } });
+  assert.equal(await smtp.submit("<fixed@id>", Buffer.from("body"), envelope), "ACKNOWLEDGED");
+  assert.equal(requested, "keychain:smtp/account");
+});
+
 test("local stream transport acknowledges raw submission with the explicit envelope", async () => {
   const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: "unix" });
   const raw = Buffer.from("Message-ID: <fixed@id>\r\nFrom: sender@example.test\r\nTo: recipient@example.test\r\nSubject: Synthetic\r\n\r\nbody");
@@ -113,6 +120,7 @@ test("IMAP adapter uses explicit folders, credentials, UID-safe references, and 
 test("account configuration requires explicit inbox and sent folders", () => {
   const valid = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX", sentFolder: "Sent" };
   assert.equal(accountConfigSchema.safeParse(valid).success, true);
+  assert.equal(accountConfigSchema.safeParse({ ...valid, smtpCredentialRef: "keychain:smtp/account" }).success, true);
   const missing = { ...valid };
   delete (missing as { sentFolder?: string }).sentFolder;
   assert.equal(accountConfigSchema.safeParse(missing).success, false);

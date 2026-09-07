@@ -44,7 +44,7 @@ export function createRuntime(config: ServerConfig, dependencies: RuntimeDepende
     const smtp = parseSmtpEndpoint(account.smtpEndpoint);
     adapters.set(account.accountId, {
       imap: new ImapFlowMailAdapter({ account, credentials, ...(dependencies.imapClientFactory === undefined ? {} : { clientFactory: dependencies.imapClientFactory }) }),
-      smtp: new NodemailerSmtpAdapter({ ...smtp, credentialRef: account.credentialRef, credentials }),
+      smtp: new NodemailerSmtpAdapter({ ...smtp, credentialRef: account.smtpCredentialRef ?? account.credentialRef, credentials }),
     });
   }
   const service = new MailGatewayService(accounts, outbox, adapters, config.limits.maxRecipients, config.limits.maxAttachmentBytes);

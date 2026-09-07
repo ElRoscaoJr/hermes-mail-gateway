@@ -106,7 +106,7 @@ The source tree implements this map; runtime composition is provided by `src/run
 - Logging: structured logs with correlation IDs and levels (`debug`, `info`, `warn`, `error`); never log credentials, tokens, Authorization headers, full arguments, message bodies, or full MIME. Audit events are separate from diagnostic logs.
 - Time: store UTC timestamps; use monotonic durations for latency; provider dates are normalized with source metadata.
 - IDs: gateway IDs and opaque message references are generated locally; Message-ID is assigned before persistence and never regenerated for an existing outbox row.
-- Configuration: runtime configuration is loaded from operator-managed files/environment/keychain references; MCP input cannot define endpoints, roots, credentials, or policy limits.
+- Configuration: runtime configuration is loaded from operator-managed files/environment/keychain references; `credentialRef` selects IMAP and optional `smtpCredentialRef` selects SMTP, falling back to `credentialRef`; MCP input cannot define endpoints, roots, credentials, or policy limits.
 
 ## Security boundaries
 

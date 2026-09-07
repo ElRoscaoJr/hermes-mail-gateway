@@ -73,7 +73,8 @@ The SQLite database is the source of truth for gateway intent, idempotency, stat
 | `display_name` | Operator-controlled non-secret label. |
 | `provider_kind` | `gmail`, `zoho`, or `generic_imap_smtp`. |
 | `imap_endpoint` / `smtp_endpoint` | Configuration references; never tool-visible as raw secret-bearing values. |
-| `credential_ref` | Keychain/Secret Service reference, never credential value. |
+| `credential_ref` | IMAP keychain/Secret Service reference, never credential value. |
+| `smtp_credential_ref` | Optional SMTP keychain/Secret Service reference; NULL means fall back to `credential_ref`. Never a credential value. |
 | `sent_policy` | `provider_managed` for Gmail/Zoho; explicit `provider_managed` or `gateway_append` for generic accounts after verification. |
 | `enabled` | Operator-controlled activation flag. |
 | `allowed_sender` | Exact configured sender identity or domain policy. |

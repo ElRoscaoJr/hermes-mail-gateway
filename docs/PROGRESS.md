@@ -32,7 +32,7 @@
 
 ## Current position
 - Phase: 5 — Development, application-service wiring slice complete.
-- Next action: Parent review of the SMTP/IMAP phase-separation fix; only then consider an explicit operator-run self-test with credentials/configuration outside the repository.
+- Next action: Parent review of the separate IMAP/SMTP credential-reference implementation; only then consider an explicit operator-run self-test with credentials/configuration outside the repository.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-08 — Separated SMTP submission classification from post-ACK Sent verification; verification exceptions now produce `SENT_UNVERIFIED` without retry or resend. Typecheck, full tests, build, offline high-severity audit, and diff checks pass. No real credentials, mailbox, email send, or network connection is used.
+Last updated: 2026-09-08 — Added optional separate SMTP credential references with nullable SQLite migration 2, legacy fallback, repository round-trip, runtime adapter selection, and safe-projection coverage. Typecheck, full tests, integration tests, build, offline high-severity audit, and diff checks pass. No real credentials, mailbox, email send, or network connection is used.

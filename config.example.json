@@ -11,6 +11,7 @@
       "imapEndpoint": "imap://imap.example.test",
       "smtpEndpoint": "smtps://smtp.example.test",
       "credentialRef": "keychain:hermes-example/primary",
+      "smtpCredentialRef": "keychain:hermes-example/primary-smtp",
       "sentPolicy": "provider_managed",
       "enabled": true,
       "allowedSender": "primary@example.test",

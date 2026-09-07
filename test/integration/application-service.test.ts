@@ -20,7 +20,7 @@ class FakeMailboxAdapter implements ImapAdapter {
 
 function serviceFixture() {
   const base = fixture();
-  base.accounts.upsert({ accountId: "other", displayName: "Other", providerKind: "gmail", imapEndpoint: "imaps://other.example.test", smtpEndpoint: "smtps://other.example.test", credentialRef: "keychain:private/other", sentPolicy: "provider_managed", enabled: true, allowedSender: "other@example.test", allowedAttachmentRoots: [base.dir], inboxFolder: "INBOX", sentFolder: "[Gmail]/Sent Mail" });
+  base.accounts.upsert({ accountId: "other", displayName: "Other", providerKind: "gmail", imapEndpoint: "imaps://other.example.test", smtpEndpoint: "smtps://other.example.test", credentialRef: "keychain:private/other", smtpCredentialRef: "keychain:private/other-smtp", sentPolicy: "provider_managed", enabled: true, allowedSender: "other@example.test", allowedAttachmentRoots: [base.dir], inboxFolder: "INBOX", sentFolder: "[Gmail]/Sent Mail" });
   const first = new FakeMailboxAdapter("first");
   const second = new FakeMailboxAdapter("second");
   const firstSmtp = new FakeSmtpAdapter();

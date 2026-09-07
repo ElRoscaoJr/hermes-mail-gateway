@@ -1,8 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fixture, input } from "../helpers.js";
+import { openDatabase } from "../../src/outbox/database.js";
+import { AccountRepository } from "../../src/outbox/accounts.js";
 test("preparation and idempotency mapping are atomic", () => { const { db, repo } = fixture(); assert.throws(() => repo.prepare(input({ accountId: "missing" }))); assert.equal((db.prepare("SELECT count(*) AS n FROM outbox_messages").get() as { n: number }).n, 0); });
 test("claim lease permits one concurrent owner", () => { const { repo } = fixture(); repo.prepare(input()); assert.equal(repo.claim("message-a", "owner-a", 10_000).state, "SEND_ATTEMPTED"); assert.throws(() => repo.claim("message-a", "owner-b", 10_000), { code: "EXECUTION_IN_PROGRESS" }); });
 test("audit records are append-only and metadata is separate", () => { const { db, repo } = fixture(); repo.appendAudit({ correlationId: "corr", caller: "Hermes main", tool: "mail_prepare", accountId: "acct", messageId: "message-a", outcomeCode: "OK", metadata: { recipientCount: 1 } }); assert.equal((db.prepare("SELECT count(*) AS n FROM audit_events").get() as { n: number }).n, 1); });
 test("audit metadata is redacted before SQLite persistence", () => { const { db, repo } = fixture(); const sensitiveValues = ["raw-password", "raw-token", "raw-secret", "raw-credential", "raw-api-key", "raw-bearer-token"]; repo.appendAudit({ correlationId: "corr-sensitive", caller: "Hermes main", tool: "mail_prepare", outcomeCode: "OK", metadata: { password: sensitiveValues[0], nested: { token: sensitiveValues[1], secret: sensitiveValues[2], credential: sensitiveValues[3], apiKey: sensitiveValues[4] }, authorization: `Bearer ${sensitiveValues[5]}` } }); const row = db.prepare("SELECT metadata FROM audit_events WHERE correlation_id = ?").get("corr-sensitive") as { metadata: string }; assert.match(row.metadata, /\[REDACTED\]/); for (const value of sensitiveValues) assert.equal(row.metadata.includes(value), false); });
 test("prepared-message audit metadata is also redacted atomically", () => { const { db, repo } = fixture(); repo.prepare(input({ audit: { correlationId: "corr-prepare-sensitive", caller: "Hermes main", tool: "mail_prepare", metadata: { password: "raw-prepare-password", nested: { token: "raw-prepare-token" } } } })); const row = db.prepare("SELECT metadata FROM audit_events WHERE correlation_id = ?").get("corr-prepare-sensitive") as { metadata: string }; assert.match(row.metadata, /\[REDACTED\]/); assert.equal(row.metadata.includes("raw-prepare-password"), false); assert.equal(row.metadata.includes("raw-prepare-token"), false); });
+
+test("migration 2 adds SMTP credential storage once and preserves legacy accounts", () => {
+  const filename = join(mkdtempSync(join(tmpdir(), "hermes-migration-")), "legacy.db");
+  const legacy = new Database(filename);
+  legacy.exec(readFileSync(join(process.cwd(), "migrations/001_initial.sql"), "utf8"));
+  legacy.exec("INSERT INTO schema_migrations(version, applied_at) VALUES (1, datetime('now'))");
+  legacy.close();
+  const db = openDatabase(filename);
+  const columns = db.prepare("PRAGMA table_info(accounts)").all() as Array<{ name: string }>;
+  assert.ok(columns.some((column) => column.name === "smtp_credential_ref"));
+  assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 2").get() as { count: number }).count, 1);
+  openDatabase(filename).close();
+  assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 2").get() as { count: number }).count, 1);
+  const accounts = new AccountRepository(db);
+  accounts.upsert({ accountId: "legacy", displayName: "Legacy", providerKind: "generic_imap_smtp", imapEndpoint: "imap://localhost", smtpEndpoint: "smtp://localhost", credentialRef: "keychain:imap/legacy", sentPolicy: "provider_managed", enabled: true, allowedSender: "legacy@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX", sentFolder: "Sent" });
+  assert.equal(accounts.get("legacy")?.smtpCredentialRef, undefined);
+  accounts.upsert({ accountId: "distinct", displayName: "Distinct", providerKind: "generic_imap_smtp", imapEndpoint: "imap://localhost", smtpEndpoint: "smtp://localhost", credentialRef: "keychain:imap/distinct", smtpCredentialRef: "keychain:smtp/distinct", sentPolicy: "provider_managed", enabled: true, allowedSender: "distinct@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX", sentFolder: "Sent" });
+  assert.equal(accounts.get("distinct")?.smtpCredentialRef, "keychain:smtp/distinct");
+  db.close();
+});
