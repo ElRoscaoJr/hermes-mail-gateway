@@ -13,6 +13,7 @@
 | Attachment validation | `src/security/attachments.ts` | Allow-listed roots, regular-file, size, and SHA-256 validation. |
 | Redaction | `src/observability/redaction.ts` | Recursive secret and bearer-token redaction. |
 | Provider-free adapters | `src/mail/adapters.ts` | IMAP/SMTP contracts and deterministic test fakes. |
+| `ImapFlowMailAdapter` | `src/mail/adapters.ts` | Provider-independent, per-operation ImapFlow 2.0.0 client lifecycle for explicit-folder listing, bounded UID-safe list/search/read, opaque references, and exact configured-Sent Message-ID verification. |
 | Preparation/execution | `src/mail/prepare.ts`, `src/mail/execute.ts` | MIME is built before persistence; execution submits stored bytes once with stable Message-ID and no-retry unknown outcomes. |
 | Credential reference parser/store | `src/mail/credentials.ts` | Validates explicit `keychain:<service>/<account>` references and resolves credentials without MCP exposure. |
 | MIME builder | `src/mail/mime.ts` | Nodemailer 10.0.1 stream MIME generation for text, optional HTML, and hash/size-validated attachments. |

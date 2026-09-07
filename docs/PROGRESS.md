@@ -31,8 +31,8 @@
 | 8 Website | n/a | No website intent |
 
 ## Current position
-- Phase: 5 — Development, provider-adapter slice complete.
-- Next action: Continue with the next provider-free adapter slice or begin the documented real-provider setup only as an explicit operator action; keep credentials and sends outside local tests.
+- Phase: 5 — Development, provider-independent ImapFlow mailbox adapter slice complete.
+- Next action: Continue with application-service wiring for bounded mailbox queries, or begin the documented real-provider setup only as an explicit operator action; keep credentials and sends outside local tests.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-07 — Provider-adapter reliability correction implemented. MIME is built before persistence, stored as an atomic raw BLOB, and submitted without rereading sources; regression tests cover invalid attachments, source deletion, and MCP omission. `npm run typecheck` passes; `npm test` builds and passes 25 tests across 7 test files with 0 failures; `npm run build` passes; `npm audit` reports 0 vulnerabilities. No real keychain entry, mailbox, credential, email send, or systemd unit used.
+Last updated: 2026-09-07 — Added the provider-independent ImapFlow 2.0.0 mailbox adapter. Account projections now carry explicit inbox and sent folders; IMAP operations resolve credentials, parse only safe imap:// or imaps:// endpoints, use one locked client per operation, return normalized bounded results, and verify exact Message-ID headers without logging bodies or auth data. Local fake-client tests cover folder configuration/listing, credential use, bounded search/read, UID/reference round trips, exact Sent verification, and safe connection failures. `npm run typecheck`, `npm test`, and `npm run build` pass with 29 tests across 7 test files and 0 failures; `npm audit` reports 0 vulnerabilities. No real keychain entry, mailbox, credential, email send, or systemd unit used.

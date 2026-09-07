@@ -31,3 +31,12 @@ Real-provider, mailbox, real-keychain, and systemd tests are intentionally defer
 - [x] `verifyOnly` is passed as an explicit no-send execution request.
 - [x] Provider behavior remains injected; no credentials, IMAP/SMTP connections, or sends are used.
 - [x] `npm run typecheck`, `npm test`, and `npm run build` pass for this slice.
+
+## Slice 4 — provider-independent ImapFlow mailbox adapter
+
+- [x] Account configuration and the persisted account projection require explicit `inboxFolder` and `sentFolder` values; no provider folder-name heuristics are used.
+- [x] ImapFlow 2.0.0 is constructed through an injectable client factory in tests; tests use no network, keychain, real mailbox, real credentials, or sends.
+- [x] Each operation resolves the configured credential reference, creates and closes one client, disables client logging, and maps connection/credential failures to `PROVIDER_UNAVAILABLE`.
+- [x] Folder listing, bounded summary search, bounded source reads, mailbox locks, UID-safe calls, and opaque folder+UID reference round trips are covered.
+- [x] Sent verification searches the configured `sentFolder` and confirms the exact Message-ID from the fetched envelope.
+- [x] Verification target for this slice: `npm run typecheck`, `npm test`, `npm run build`, and `npm audit`.
