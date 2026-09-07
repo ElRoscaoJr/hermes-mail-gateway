@@ -1,0 +1,30 @@
+{
+  "name": "hermes-mail-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local fail-safe mail gateway and MCP server for Hermes Agent",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24.20.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-migrations.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/unit/*.test.js dist/test/integration/*.test.js",
+    "test:integration": "npm run build && node --test dist/test/integration/*.test.js",
+    "test:real-provider": "node --test dist/test/real-provider"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "better-sqlite3": "13.0.3",
+    "imapflow": "2.0.0",
+    "mailparser": "3.9.23",
+    "nodemailer": "10.0.1",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.10.1",
+    "typescript": "7.0.2"
+  }
+}

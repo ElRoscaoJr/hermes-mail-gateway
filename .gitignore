@@ -1,13 +1,14 @@
 node_modules/
 dist/
 coverage/
+*.db
+*.db-*
 .env
 .env.*
 !.env.example
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
-*.db
 *.db-shm
 *.db-wal
 credentials/
@@ -17,5 +18,5 @@ secrets/
 *.p12
 *.pfx
 .DS_Store
-.claude/settings.local.json
 CLAUDE.local.md
+.claude/settings.local.json
