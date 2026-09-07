@@ -17,7 +17,7 @@ export async function buildMime(message: PreparedMessage, options: MimeBuildOpti
     if (validated.size !== manifest.size) throw new SafeError("ATTACHMENT_CHANGED", "Attachment size does not match the declared manifest.");
     attachments.push({ filename: manifest.path.split(/[\\/]/).pop() ?? "attachment", path: validated.path, contentType: manifest.contentType });
   }
-  const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: "unix" });
+  const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: "windows" });
   const info = await transport.sendMail({
     messageId: message.messageIdHeader,
     from: message.fromAddress,

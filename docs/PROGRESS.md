@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-08 — Fixed raw SMTP submission ambiguity by passing the persisted sender and recipients as a typed envelope through execution and sending stored MIME with Nodemailer `envelope: { from, to }`. Preserved exact Message-ID/raw MIME/no-retry behavior, narrowed pre-submission classification to explicit connection-phase errors, and added transport/local-stream regression coverage. Verified typecheck, full tests (10 files, 0 failures), integration tests, build, and `npm audit --offline --audit-level=high` (0 vulnerabilities). No real credentials, mailbox, email send, or network connection was used; online audit was intentionally not run per request.
+Last updated: 2026-09-08 — Fixed persisted raw MIME line endings by configuring Nodemailer stream transport with `newline: "windows"`; added a regression rejecting bare LF line endings while preserving Message-ID, attachments, idempotency, and redaction coverage. No real credentials, mailbox, email send, or network connection is used.

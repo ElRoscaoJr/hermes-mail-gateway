@@ -31,6 +31,8 @@ test("Nodemailer MIME preserves headers, HTML, attachment bytes, and Message-ID"
   const message = { ...baseMessage, htmlBody: "<strong>html body</strong>", attachments: [{ path, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), contentType: "application/octet-stream" }] };
   const raw = await buildMime(message, { attachmentRoots: [dir] });
   const mime = raw.toString("utf8");
+  assert.match(mime, /\r\n/);
+  assert.doesNotMatch(mime, /(^|[^\r])\n/);
   assert.match(mime, /Message-ID: <fixed@hermes-mail-gateway\.local>/i);
   assert.match(mime, /Content-Type: text\/plain/i);
   assert.match(mime, /html body/);
