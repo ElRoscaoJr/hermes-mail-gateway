@@ -1,0 +1,48 @@
+# EXAMPLE ONLY — review every path and hardening choice before installing.
+# This template contains no credentials. Keep the real JSON configuration
+# outside the repository and keep credential values in the host keychain.
+# A stdio server needs an operator-managed stdin/stdout bridge; this unit is
+# only a process-supervision example and is not a complete Hermes integration.
+
+[Unit]
+Description=Hermes Mail Gateway (example user service)
+Documentation=README.md
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/absolute/path/to/hermes-mail-gateway
+ExecStart=/usr/bin/node /absolute/path/to/hermes-mail-gateway/dist/src/main.js
+Environment=HERMES_MAIL_CONFIG=/absolute/path/to/external/hermes-mail-gateway/config.json
+
+# Restarting a crashed process is not a mail-send retry. Never add a retry
+# loop for an ambiguous provider outcome; verify the durable outbox state.
+Restart=on-failure
+RestartSec=5s
+
+# The built process speaks MCP over stdio. Supply the bridge's descriptors
+# when adapting this example; do not redirect protocol output to a log file.
+StandardInput=null
+StandardOutput=null
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Replace these example paths with the external state and attachment roots
+# used by the operator. The service must be able to write only its database
+# directory and read only its configured attachment directory.
+ReadWritePaths=/absolute/path/to/external/hermes-mail-gateway/state
+ReadOnlyPaths=/absolute/path/to/external/hermes-mail-gateway/attachments
+
+[Install]
+WantedBy=default.target

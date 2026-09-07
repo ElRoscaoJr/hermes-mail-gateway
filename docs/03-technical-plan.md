@@ -72,12 +72,13 @@ Required tables and invariants are defined in [`docs/02-functional-spec.md`](02-
 
 ## Code map
 
-The source tree does not yet exist. This planned map is the authoritative implementation target; it must be kept current as slices are added.
+The source tree implements this map; runtime composition is provided by `src/runtime.ts` and the executable process by `src/main.ts`.
 
 | Path | Purpose |
 |---|---|
-| `src/index.ts` | Process entrypoint, startup checks, transport boot, and graceful shutdown. |
-| `src/config/` | Strict local configuration loading and non-secret account policy. |
+| `src/index.ts` | Public library exports. |
+| `src/main.ts` | Process entrypoint, fail-closed startup, stdio transport, and database lifetime. |
+| `src/config/` | Strict configuration model; `src/runtime.ts` performs explicit file loading and composition. |
 | `src/auth/` | Loopback caller authentication and Hermes `main` authorization. |
 | `src/mcp/` | Tool registration, schemas, safe result/error mapping, and request bounds. |
 | `src/application/` | Use cases for accounts, query, prepare, execute, verify, and organization. |

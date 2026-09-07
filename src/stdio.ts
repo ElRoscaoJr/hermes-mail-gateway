@@ -5,5 +5,8 @@ import { createMcpServer } from "./mcp/server.js";
 /** Starts MCP stdio; stdout is reserved exclusively for MCP protocol messages. */
 export async function startStdio(service: MailApplicationService): Promise<void> {
   const server = createMcpServer(service);
-  await server.connect(new StdioServerTransport());
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  // An explicitly resumed stdin keeps a pipe-backed process alive between MCP messages.
+  process.stdin.resume();
 }

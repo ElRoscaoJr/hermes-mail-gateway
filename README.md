@@ -23,7 +23,15 @@ The gateway must never blindly retry an SMTP operation whose delivery outcome is
 
 ## Project status
 
-Discovery is in progress. See `docs/PROGRESS.md` and `docs/01-discovery.md`.
+The local runtime, all four MCP tools, multi-account configuration composition, bounded IMAP reads, durable MIME preparation, no-retry execution, exact Sent verification, and redacted responses are implemented. See `docs/PROGRESS.md` for remaining operator-only work.
+
+## Run locally
+
+The process requires an explicit operator configuration file; it does not load `.env` files or use defaults. Set `HERMES_MAIL_CONFIG=/absolute/path/to/config.json` and run `npm run build && npm start`. The file contains non-secret account metadata and `keychain:<service>/<account>` references only. It must define `databasePath`, server `attachmentRoots`, unique `accounts`, and `limits`; each account defines its own IMAP/SMTP endpoints, folders, sender, and attachment roots. The process writes MCP protocol messages only to stdout and startup diagnostics only to stderr.
+
+For local-only verification, use the synthetic fixtures in `test/` and the process startup smoke test. A future real-provider check must use a separately created, operator-controlled self-test address, a disposable database, credentials inserted manually into the host keychain, and a configuration file outside this repository. First run `mail_accounts`, then bounded `mail_query`; only after confirming the account, folder, recipient, and Sent policy should an operator prepare a message. Never test with a customer or third-party recipient, and never enable automatic retry.
+
+Threads, attachment-only mailbox operations, drafts, replies, forwards, and destructive organization operations are intentionally unsupported in v1. They return a stable `UNSUPPORTED_OPERATION` response where exposed; the gateway never silently approximates them.
 
 ## Security
 

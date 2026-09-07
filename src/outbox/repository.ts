@@ -30,6 +30,14 @@ export class OutboxRepository {
     const current = this.get(messageId); if (!transitions[current.state].includes(next)) throw new SafeError("STATE_CONFLICT", `Transition from ${current.state} to ${next} is not permitted.`);
     this.db.prepare("UPDATE outbox_messages SET state = ?, provider_evidence = COALESCE(?, provider_evidence), updated_at = ? WHERE message_id = ?").run(next, evidence ?? null, now(), messageId); return this.get(messageId);
   }
+  confirmSent(messageId: string, evidence = "exact Message-ID found in Sent"): PreparedMessage {
+    const at = now();
+    const result = this.db.prepare("UPDATE outbox_messages SET state = 'SENT_VERIFIED', provider_evidence = COALESCE(?, provider_evidence), updated_at = ? WHERE message_id = ? AND state IN ('PREPARED', 'SEND_ATTEMPTED', 'SENT_UNVERIFIED', 'OUTCOME_UNKNOWN')").run(evidence, at, messageId);
+    if (result.changes === 1) return this.get(messageId);
+    const current = this.get(messageId);
+    if (current.state === "SENT_VERIFIED") return current;
+    throw new SafeError("STATE_CONFLICT", `Confirmation from ${current.state} is not permitted.`);
+  }
   claim(messageId: string, owner: string, leaseMs: number, at = now()): PreparedMessage {
     const until = new Date(Date.parse(at) + leaseMs).toISOString();
     const result = this.db.prepare("UPDATE outbox_messages SET state = 'SEND_ATTEMPTED', attempt_owner = ?, lease_until = ?, updated_at = ? WHERE message_id = ? AND state = 'PREPARED' AND (lease_until IS NULL OR lease_until < ?)").run(owner, until, at, messageId, at);

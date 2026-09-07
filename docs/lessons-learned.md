@@ -27,3 +27,10 @@
 - What failed: Claiming an outbox row and then rereading attachment files to construct the submission.
 - Working solution: Build and validate complete MIME from account-derived roots before `OutboxRepository.prepare`, store it as a raw SQLite BLOB atomically with idempotency, and retrieve it before claiming.
 - Rule for next time: Execution submits only the stored bytes; it never regenerates MIME or rereads preparation-time sources.
+
+## L-005 — Explicit Sent confirmation must be durable
+- Problem: `mail_execute` with `verifyOnly` observed Sent but returned the outbox row unchanged, allowing a later execution to claim and submit SMTP.
+- Where: Phase 5 application-service reliability slice.
+- What failed: Treating an explicit post-ambiguity confirmation as a read-only query.
+- Working solution: After exact Message-ID verification succeeds, atomically transition only eligible outbox states to `SENT_VERIFIED`; leave state unchanged when verification is missing.
+- Rule for next time: Any successful explicit delivery confirmation must close the durable send state before returning.

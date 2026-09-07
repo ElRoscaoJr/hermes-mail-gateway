@@ -1,0 +1,44 @@
+{
+  "databasePath": "/var/lib/hermes-mail-gateway-example/state/mail-gateway.sqlite",
+  "attachmentRoots": [
+    "/var/lib/hermes-mail-gateway-example/attachments"
+  ],
+  "accounts": [
+    {
+      "accountId": "example-primary",
+      "displayName": "Synthetic primary example.test account",
+      "providerKind": "generic_imap_smtp",
+      "imapEndpoint": "imap://imap.example.test",
+      "smtpEndpoint": "smtps://smtp.example.test",
+      "credentialRef": "keychain:hermes-example/primary",
+      "sentPolicy": "provider_managed",
+      "enabled": true,
+      "allowedSender": "primary@example.test",
+      "allowedAttachmentRoots": [
+        "/var/lib/hermes-mail-gateway-example/attachments"
+      ],
+      "inboxFolder": "INBOX",
+      "sentFolder": "Sent"
+    },
+    {
+      "accountId": "example-secondary",
+      "displayName": "Synthetic secondary example.test account",
+      "providerKind": "generic_imap_smtp",
+      "imapEndpoint": "imap://imap.example.test",
+      "smtpEndpoint": "smtps://smtp.example.test",
+      "credentialRef": "keychain:hermes-example/secondary",
+      "sentPolicy": "provider_managed",
+      "enabled": true,
+      "allowedSender": "secondary@example.test",
+      "allowedAttachmentRoots": [
+        "/var/lib/hermes-mail-gateway-example/attachments"
+      ],
+      "inboxFolder": "INBOX",
+      "sentFolder": "Sent"
+    }
+  ],
+  "limits": {
+    "maxRecipients": 1,
+    "maxAttachmentBytes": 1048576
+  }
+}

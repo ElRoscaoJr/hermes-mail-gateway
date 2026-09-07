@@ -4,11 +4,13 @@
 |---|---|---|
 | Four MCP input schemas | `src/mcp/schemas.ts` | Strict schemas for `mail_accounts`, `mail_query`, `mail_prepare`, and `mail_execute`. |
 | `MailApplicationService` | `src/application/service.ts` | Provider-free four-operation application seam and per-call context. |
+| `MailGatewayService` | `src/application/service.ts` | Account-scoped application wiring for safe projections, bounded mailbox queries, durable preparation, verification-only execution, and SMTP execution. |
 | `createMcpServer(service)` | `src/mcp/server.ts` | Exactly four strict, redacting MCP tools with safe error mapping. |
 | `startStdio(service)` | `src/stdio.ts` | SDK stdio composition entrypoint; stdout is protocol-only. |
+| Runtime composition/configuration | `src/runtime.ts`, `src/main.ts` | Explicit JSON configuration, account-scoped adapter construction, fail-closed startup, and executable stdio process. |
 | Safe errors/results | `src/errors.ts` | Stable error taxonomy and typed result envelope. |
 | Account projection repository | `src/outbox/accounts.ts` | Secret-free account configuration projection. |
-| Outbox repository | `src/outbox/repository.ts` | Atomic preparation including raw MIME BLOB persistence, idempotency, transitions, leases, raw MIME retrieval, and audit append. |
+| Outbox repository | `src/outbox/repository.ts` | Atomic preparation including raw MIME BLOB persistence, idempotency, exact-verification confirmation, transitions, leases, raw MIME retrieval, and audit append. |
 | Database migrations | `src/outbox/database.ts`, `migrations/001_initial.sql` | WAL SQLite authority and schema initialization. |
 | Attachment validation | `src/security/attachments.ts` | Allow-listed roots, regular-file, size, and SHA-256 validation. |
 | Redaction | `src/observability/redaction.ts` | Recursive secret and bearer-token redaction. |
@@ -18,3 +20,4 @@
 | Credential reference parser/store | `src/mail/credentials.ts` | Validates explicit `keychain:<service>/<account>` references and resolves credentials without MCP exposure. |
 | MIME builder | `src/mail/mime.ts` | Nodemailer 10.0.1 stream MIME generation for text, optional HTML, and hash/size-validated attachments. |
 | Nodemailer SMTP adapter | `src/mail/adapters.ts` | Injected-transport SMTP submission with rejected, pre-submission, acknowledged, and unknown outcomes; no internal retry. |
+| `UNSUPPORTED_OPERATION` | `src/errors.ts` | Safe error for explicitly unsupported mailbox operations such as threads and attachments. |

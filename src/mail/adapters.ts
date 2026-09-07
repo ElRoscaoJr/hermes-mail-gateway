@@ -5,7 +5,12 @@ import type { AccountProjection } from "../domain/types.js";
 import { SafeError } from "../errors.js";
 import type { CredentialResolver } from "./credentials.js";
 
-export interface ImapAdapter { verifySent(messageIdHeader: string): Promise<boolean>; }
+export interface ImapAdapter {
+  verifySent(messageIdHeader: string): Promise<boolean>;
+  list?(folder: string, limit?: number): Promise<readonly MailSummary[]>;
+  search?(folder: string, query: string, limit?: number): Promise<readonly MailSummary[]>;
+  read?(reference: string): Promise<MailMessage>;
+}
 export type SmtpOutcome = "ACKNOWLEDGED" | "REJECTED" | "PRE_SUBMISSION_FAILURE" | "UNKNOWN";
 export interface SmtpAdapter { submit(messageIdHeader: string, mime: Buffer): Promise<SmtpOutcome>; }
 
@@ -19,6 +24,15 @@ export interface NodemailerSmtpOptions {
 }
 
 type MailError = { code?: string; command?: string; responseCode?: number; response?: string; rejected?: unknown[] };
+
+export function parseSmtpEndpoint(endpoint: string): { host: string; port: number; secure: boolean } {
+  let url: URL;
+  try { url = new URL(endpoint); } catch { throw new SafeError("REFERENCE_INVALID", "SMTP endpoint is invalid."); }
+  if ((url.protocol !== "smtp:" && url.protocol !== "smtps:") || url.username || url.password || url.search || url.hash || !url.hostname) throw new SafeError("REFERENCE_INVALID", "SMTP endpoint is invalid.");
+  const port = url.port ? Number(url.port) : url.protocol === "smtps:" ? 465 : 587;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new SafeError("REFERENCE_INVALID", "SMTP endpoint is invalid.");
+  return { host: url.hostname, port, secure: url.protocol === "smtps:" };
+}
 
 function isProviderRejection(error: MailError): boolean {
   return typeof error.responseCode === "number" || Array.isArray(error.rejected);

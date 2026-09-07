@@ -28,7 +28,7 @@ Real-provider, mailbox, real-keychain, and systemd tests are intentionally defer
 - [x] Success and error responses are JSON structured content with redaction; no stack traces or secret values are returned.
 - [x] Each invocation receives a generated correlation ID.
 - [x] The service seam carries the account ID to execution; implementations must reject ownership mismatch, and the smoke fake verifies that path.
-- [x] `verifyOnly` is passed as an explicit no-send execution request.
+- [x] `verifyOnly` is an explicit no-send execution request: exact Sent verification atomically confirms `PREPARED`, `SEND_ATTEMPTED`, `SENT_UNVERIFIED`, or `OUTCOME_UNKNOWN`; a missing message leaves state unchanged.
 - [x] Provider behavior remains injected; no credentials, IMAP/SMTP connections, or sends are used.
 - [x] `npm run typecheck`, `npm test`, and `npm run build` pass for this slice.
 
@@ -40,3 +40,17 @@ Real-provider, mailbox, real-keychain, and systemd tests are intentionally defer
 - [x] Folder listing, bounded summary search, bounded source reads, mailbox locks, UID-safe calls, and opaque folder+UID reference round trips are covered.
 - [x] Sent verification searches the configured `sentFolder` and confirms the exact Message-ID from the fetched envelope.
 - [x] Verification target for this slice: `npm run typecheck`, `npm test`, `npm run build`, and `npm audit`.
+
+## Slice 5 — application-service wiring
+
+- [x] `MailGatewayService` composes account and outbox repositories with an accountId-keyed IMAP/SMTP adapter registry.
+- [x] `mailAccounts` returns only accountId, displayName, providerKind, allowed sender, enabled, and optional non-secret health; credential references and endpoints are excluded.
+- [x] `mailQuery` explicitly resolves accounts, bounds limits to 100, dispatches list/search/read/verifySent, and returns normalized adapter values.
+- [x] Thread and attachment query operations return `UNSUPPORTED_OPERATION`.
+- [x] `mailPrepare` delegates durable asynchronous preparation without returning raw MIME.
+- [x] `mailExecute` enforces message ownership, durably confirms exact Sent matches with no-send `verifyOnly`, and delegates normal execution to `executeOnce` with stored MIME.
+- [x] Integration tests use SQLite plus fake mailbox/IMAP and SMTP adapters; no real mail, keychain, systemd, credentials, or sends are used.
+- [x] Compiled stdio startup is smoke-tested with an MCP `initialize` frame and with absent configuration; diagnostics stay off stdout. The child-process checks skip only when the host sandbox denies process creation.
+- [x] `npm run typecheck`, `npm test`, and `npm run build` pass with 9 test files and 0 failures.
+- [x] `npm audit --offline --audit-level=high` found 0 vulnerabilities.
+- [ ] Online `npm audit --audit-level=high` could not complete because the environment could not resolve `registry.npmjs.org` (`EAI_AGAIN`).

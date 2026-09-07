@@ -31,8 +31,8 @@
 | 8 Website | n/a | No website intent |
 
 ## Current position
-- Phase: 5 — Development, provider-independent ImapFlow mailbox adapter slice complete.
-- Next action: Continue with application-service wiring for bounded mailbox queries, or begin the documented real-provider setup only as an explicit operator action; keep credentials and sends outside local tests.
+- Phase: 5 — Development, application-service wiring slice complete.
+- Next action: Parent review of runtime composition and local verification; only then consider an explicit operator-run self-test with credentials/configuration outside the repository.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-07 — Added the provider-independent ImapFlow 2.0.0 mailbox adapter. Account projections now carry explicit inbox and sent folders; IMAP operations resolve credentials, parse only safe imap:// or imaps:// endpoints, use one locked client per operation, return normalized bounded results, and verify exact Message-ID headers without logging bodies or auth data. Local fake-client tests cover folder configuration/listing, credential use, bounded search/read, UID/reference round trips, exact Sent verification, and safe connection failures. `npm run typecheck`, `npm test`, and `npm run build` pass with 29 tests across 7 test files and 0 failures; `npm audit` reports 0 vulnerabilities. No real keychain entry, mailbox, credential, email send, or systemd unit used.
+Last updated: 2026-09-08 — Added explicit JSON runtime configuration, duplicate-account validation, account-scoped IMAP/SMTP adapter construction with injected credential resolution, a fail-closed stdio executable, configured recipient/attachment limits, and process startup smoke coverage. Supported list/search/read/verifySent and durable prepare/execute behavior remain local-tested; thread/attachments (and drafts/replies/forwards) are explicit v1 limitations. No real keychain entry, mailbox, credential, email send, network connection, or systemd unit used.

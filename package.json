@@ -2,6 +2,7 @@
   "name": "hermes-mail-gateway",
   "version": "0.1.0",
   "private": true,
+  "bin": { "hermes-mail-gateway": "dist/src/main.js" },
   "description": "Local fail-safe mail gateway and MCP server for Hermes Agent",
   "license": "MIT",
   "type": "module",
@@ -12,7 +13,8 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/test/unit/*.test.js dist/test/integration/*.test.js",
     "test:integration": "npm run build && node --test dist/test/integration/*.test.js",
-    "test:real-provider": "node --test dist/test/real-provider"
+    "test:real-provider": "node --test dist/test/real-provider",
+    "start": "node dist/src/main.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
