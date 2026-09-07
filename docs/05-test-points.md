@@ -54,3 +54,10 @@ Real-provider, mailbox, real-keychain, and systemd tests are intentionally defer
 - [x] `npm run typecheck`, `npm test`, and `npm run build` pass with 9 test files and 0 failures.
 - [x] `npm audit --offline --audit-level=high` found 0 vulnerabilities.
 - [ ] Online `npm audit --audit-level=high` could not complete because the environment could not resolve `registry.npmjs.org` (`EAI_AGAIN`).
+
+## Slice 6 — operator keychain provisioning helper
+
+- [x] `scripts/store-keychain-credential.mjs` accepts exactly non-secret service/account arguments and requires an interactive TTY.
+- [x] Password input uses raw mode with terminal echo disabled, calls `cross-keychain.setPassword`, restores terminal state in `finally`, and emits only a generic error.
+- [x] Static security validation passes; piped non-TTY input is refused without reading the supplied value.
+- [x] `npm run typecheck`, `npm test`, `npm run build`, offline `npm audit --audit-level=moderate`, and `git diff --check` pass.

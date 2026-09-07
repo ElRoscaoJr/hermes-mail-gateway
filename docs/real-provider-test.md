@@ -16,7 +16,13 @@ Never use a customer, colleague, mailing list, forwarding address, or any other 
 3. Set `databasePath` to a newly created disposable database path. Do not point it at a production database or an existing gateway database.
 4. Set `attachmentRoots` and both accounts' `allowedAttachmentRoots` to a disposable directory containing no confidential files. Create one harmless, non-sensitive text fixture there and record its byte size and SHA-256 locally.
 5. Ensure the selected account's `allowedSender` is the operator's self-test mailbox and that its `sentFolder` is the provider's actual Sent folder. Set `sentPolicy` according to the provider's documented behavior; do not add a gateway append policy without a separate, deliberate test.
-6. Manually create the keychain entries referenced by the external configuration. Store the provider username and password/app-password in the host keychain only. Do not place secrets in shell history, the JSON file, logs, SQLite, or this document. Verify entries through the keychain UI or an equivalent operation that does not print secret values.
+6. Create the keychain entries referenced by the external configuration. Store the provider username and password/app-password in the host keychain only. For a new entry, run the repository helper from an interactive terminal, supplying only the non-secret service and account values as arguments; it prompts for the password without echoing it:
+
+   ```sh
+   node scripts/store-keychain-credential.mjs hermes-mail-gateway user@example.test
+   ```
+
+   The helper requires a TTY, never accepts a password argument or environment variable, and reports only a generic failure. Do not place secrets in shell history, the JSON file, logs, SQLite, or this document. Verify entries through the keychain UI or an equivalent operation that does not print secret values.
 7. Build the checkout with `npm run build`. Start the compiled stdio server with `HERMES_MAIL_CONFIG` pointing to the external configuration. Keep protocol stdin/stdout connected to the MCP client; keep diagnostics on stderr.
 8. Before any send operation, confirm that the disposable database is empty/new, the recipient is still `<operator-self-test-address>`, and the service reports no configuration error. If any check is uncertain, stop.
 
