@@ -32,7 +32,7 @@
 
 ## Current position
 - Phase: 5 — Development, application-service wiring slice complete.
-- Next action: Parent review of the explicit SMTP envelope fix; only then consider an explicit operator-run self-test with credentials/configuration outside the repository.
+- Next action: Parent review of the SMTP/IMAP phase-separation fix; only then consider an explicit operator-run self-test with credentials/configuration outside the repository.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-08 — Fixed persisted raw MIME line endings by configuring Nodemailer stream transport with `newline: "windows"`; added a regression rejecting bare LF line endings while preserving Message-ID, attachments, idempotency, and redaction coverage. No real credentials, mailbox, email send, or network connection is used.
+Last updated: 2026-09-08 — Separated SMTP submission classification from post-ACK Sent verification; verification exceptions now produce `SENT_UNVERIFIED` without retry or resend. Typecheck, full tests, build, offline high-severity audit, and diff checks pass. No real credentials, mailbox, email send, or network connection is used.

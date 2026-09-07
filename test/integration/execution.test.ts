@@ -19,6 +19,17 @@ test("a thrown SMTP attempt becomes an ambiguous durable outcome and cannot be r
   assert.equal(submissions, 1);
 });
 
+test("verification failure after SMTP acknowledgement is unverified and cannot be retried", async () => {
+  const { repo } = fixture();
+  repo.prepare(input());
+  const smtp = new FakeSmtpAdapter("ACKNOWLEDGED");
+  const imap = { verifySent: async () => { throw new Error("IMAP unavailable"); } };
+  const result = await executeOnce(repo, smtp, imap, "message-a", "owner");
+  assert.equal(result.state, "SENT_UNVERIFIED");
+  assert.throws(() => repo.claim("message-a", "new-owner", 10_000), { code: "STATE_CONFLICT" });
+  assert.equal(smtp.submissions.length, 1);
+});
+
 test("execution submits the stored MIME after the source attachment is deleted", async () => {
   const { dir, accounts, repo } = fixture();
   const attachment = `${dir}/source.txt`;
