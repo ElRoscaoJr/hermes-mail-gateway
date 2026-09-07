@@ -34,3 +34,10 @@
 - What failed: Treating an explicit post-ambiguity confirmation as a read-only query.
 - Working solution: After exact Message-ID verification succeeds, atomically transition only eligible outbox states to `SENT_VERIFIED`; leave state unchanged when verification is missing.
 - Rule for next time: Any successful explicit delivery confirmation must close the durable send state before returning.
+
+## L-006 — Raw SMTP submission requires an explicit envelope
+- Problem: Real-provider SMTP verification succeeded, but raw Nodemailer submission had an unknown outcome and no Sent copy; raw local stream submission was acknowledged.
+- Where: SMTP adapter raw `sendMail` path.
+- What failed: Omitting the SMTP envelope and relying on provider/Nodemailer inference from raw MIME.
+- Working solution: Pass the persisted sender and recipients through execution and submit stored raw MIME with `envelope: { from, to }`; classify only an explicitly identified connection-phase failure as pre-submission.
+- Rule for next time: Raw MIME, envelope, and exact Message-ID are separate durable submission inputs; never reconstruct MIME or retry an ambiguous attempt.

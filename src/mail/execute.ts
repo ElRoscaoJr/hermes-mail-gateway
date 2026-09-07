@@ -7,7 +7,7 @@ export async function executeOnce(repo: OutboxRepository, smtp: SmtpAdapter, ima
   let smtpAttemptStarted = false;
   try {
     smtpAttemptStarted = true;
-    const outcome = await smtp.submit(claimed.messageIdHeader, mime);
+    const outcome = await smtp.submit(claimed.messageIdHeader, mime, { from: claimed.fromAddress, to: claimed.recipients });
     if (outcome === "REJECTED") return repo.transition(messageId, "FAILED_PERMANENT", "provider rejected submission");
     if (outcome === "PRE_SUBMISSION_FAILURE") return repo.transition(messageId, "FAILED_PERMANENT", "submission did not begin");
     if (outcome === "UNKNOWN") return repo.transition(messageId, "OUTCOME_UNKNOWN", "provider outcome could not be established");

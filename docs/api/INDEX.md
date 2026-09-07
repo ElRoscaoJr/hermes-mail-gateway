@@ -14,10 +14,10 @@
 | Database migrations | `src/outbox/database.ts`, `migrations/001_initial.sql` | WAL SQLite authority and schema initialization. |
 | Attachment validation | `src/security/attachments.ts` | Allow-listed roots, regular-file, size, and SHA-256 validation. |
 | Redaction | `src/observability/redaction.ts` | Recursive secret and bearer-token redaction. |
-| Provider-free adapters | `src/mail/adapters.ts` | IMAP/SMTP contracts and deterministic test fakes. |
+| Provider-free adapters | `src/mail/adapters.ts` | IMAP/SMTP contracts, typed SMTP envelope, and deterministic test fakes. |
 | `ImapFlowMailAdapter` | `src/mail/adapters.ts` | Provider-independent, per-operation ImapFlow 2.0.0 client lifecycle for explicit-folder listing, bounded UID-safe list/search/read, opaque references, and exact configured-Sent Message-ID verification. |
 | Preparation/execution | `src/mail/prepare.ts`, `src/mail/execute.ts` | MIME is built before persistence; execution submits stored bytes once with stable Message-ID and no-retry unknown outcomes. |
 | Credential reference parser/store | `src/mail/credentials.ts` | Validates explicit `keychain:<service>/<account>` references and resolves credentials without MCP exposure. |
 | MIME builder | `src/mail/mime.ts` | Nodemailer 10.0.1 stream MIME generation for text, optional HTML, and hash/size-validated attachments. |
-| Nodemailer SMTP adapter | `src/mail/adapters.ts` | Injected-transport SMTP submission with rejected, pre-submission, acknowledged, and unknown outcomes; no internal retry. |
+| Nodemailer SMTP adapter | `src/mail/adapters.ts` | Injected-transport submission of persisted raw MIME with an explicit typed `{ from, to }` envelope; rejected, pre-submission, acknowledged, and unknown outcomes; no internal retry. |
 | `UNSUPPORTED_OPERATION` | `src/errors.ts` | Safe error for explicitly unsupported mailbox operations such as threads and attachments. |

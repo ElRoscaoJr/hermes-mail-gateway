@@ -8,7 +8,7 @@ Hermes invokes `mail_execute` for a durable `PREPARED` gateway message.
 
 1. Gateway authenticates the caller, checks account ownership, and loads the stored raw MIME BLOB.
 2. Gateway loads the immutable outbox row and validates that the state is executable, then atomically acquires an execution lease.
-3. SMTP adapter submits exactly the loaded bytes once using the account's configured provider policy.
+3. SMTP adapter submits exactly the loaded bytes once with the persisted sender and recipients as an explicit SMTP envelope.
 4. Gateway classifies the provider response and persists the outcome.
 6. For an acknowledged submission, the IMAP adapter searches the configured Sent location for the exact Message-ID.
 7. Gateway records `SENT_VERIFIED` only when exact verification succeeds; it returns the safe result and audit correlation ID.

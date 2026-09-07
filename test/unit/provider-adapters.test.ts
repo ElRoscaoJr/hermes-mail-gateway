@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import nodemailer from "nodemailer";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -43,20 +44,40 @@ function adapter(sendMail: (options: unknown) => Promise<{ message: Buffer; reje
   return new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transport: { sendMail } });
 }
 
+const envelope = { from: baseMessage.fromAddress, to: baseMessage.recipients };
+
 test("SMTP adapter classifies provider rejection", async () => {
-  assert.equal(await adapter(async () => { throw { responseCode: 550, response: "rejected" }; }).submit("<fixed@id>", Buffer.from("body")), "REJECTED");
+  assert.equal(await adapter(async () => { throw { responseCode: 550, response: "rejected" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), "REJECTED");
 });
 
 test("SMTP adapter classifies an accepted provider response", async () => {
-  assert.equal(await adapter(async () => ({ message: Buffer.from("accepted"), rejected: [] })).submit("<fixed@id>", Buffer.from("body")), "ACKNOWLEDGED");
+  assert.equal(await adapter(async () => ({ message: Buffer.from("accepted"), rejected: [] })).submit("<fixed@id>", Buffer.from("body"), envelope), "ACKNOWLEDGED");
+});
+
+test("SMTP adapter passes the explicit envelope with raw MIME", async () => {
+  let options: unknown;
+  const result = await adapter(async (value) => { options = value; return { message: Buffer.from("accepted"), rejected: [] }; }).submit("<fixed@id>", Buffer.from("stored raw MIME"), envelope);
+  assert.equal(result, "ACKNOWLEDGED");
+  assert.deepEqual(options, { raw: Buffer.from("stored raw MIME"), envelope: { from: "sender@example.test", to: ["recipient@example.test"] } });
+});
+
+test("local stream transport acknowledges raw submission with the explicit envelope", async () => {
+  const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: "unix" });
+  const raw = Buffer.from("Message-ID: <fixed@id>\r\nFrom: sender@example.test\r\nTo: recipient@example.test\r\nSubject: Synthetic\r\n\r\nbody");
+  const result = await new NodemailerSmtpAdapter({ host: "unused.example.test", port: 1, secure: false, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transport }).submit("<fixed@id>", raw, envelope);
+  assert.equal(result, "ACKNOWLEDGED");
 });
 
 test("SMTP adapter classifies pre-submission connection failure", async () => {
-  assert.equal(await adapter(async () => { throw { code: "ECONNECTION", command: "CONN" }; }).submit("<fixed@id>", Buffer.from("body")), "PRE_SUBMISSION_FAILURE");
+  assert.equal(await adapter(async () => { throw { code: "ECONNECTION", command: "CONN" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), "PRE_SUBMISSION_FAILURE");
 });
 
 test("SMTP adapter classifies exceptions after the SMTP attempt as unknown", async () => {
-  assert.equal(await adapter(async () => { throw { code: "ESOCKET", command: "DATA" }; }).submit("<fixed@id>", Buffer.from("body")), "UNKNOWN");
+  assert.equal(await adapter(async () => { throw { code: "ESOCKET", command: "DATA" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), "UNKNOWN");
+});
+
+test("connection timeout without an explicit connection phase remains unknown", async () => {
+  assert.equal(await adapter(async () => { throw { code: "ETIMEDOUT" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), "UNKNOWN");
 });
 
 const imapAccount: AccountProjection = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX-custom", sentFolder: "Archive/Sent-custom" };

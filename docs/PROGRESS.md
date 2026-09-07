@@ -32,7 +32,7 @@
 
 ## Current position
 - Phase: 5 — Development, application-service wiring slice complete.
-- Next action: Parent review of runtime composition and local verification; only then consider an explicit operator-run self-test with credentials/configuration outside the repository.
+- Next action: Parent review of the explicit SMTP envelope fix; only then consider an explicit operator-run self-test with credentials/configuration outside the repository.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-08 — Added explicit JSON runtime configuration, duplicate-account validation, account-scoped IMAP/SMTP adapter construction with injected credential resolution, a fail-closed stdio executable, configured recipient/attachment limits, process startup smoke coverage, and a TTY-only operator keychain provisioning helper documented for real-provider setup. Runtime behavior is unchanged; no real keychain entry, mailbox, credential, email send, network connection, or systemd unit was used.
+Last updated: 2026-09-08 — Fixed raw SMTP submission ambiguity by passing the persisted sender and recipients as a typed envelope through execution and sending stored MIME with Nodemailer `envelope: { from, to }`. Preserved exact Message-ID/raw MIME/no-retry behavior, narrowed pre-submission classification to explicit connection-phase errors, and added transport/local-stream regression coverage. Verified typecheck, full tests (10 files, 0 failures), integration tests, build, and `npm audit --offline --audit-level=high` (0 vulnerabilities). No real credentials, mailbox, email send, or network connection was used; online audit was intentionally not run per request.

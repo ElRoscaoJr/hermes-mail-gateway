@@ -12,7 +12,8 @@ export interface ImapAdapter {
   read?(reference: string): Promise<MailMessage>;
 }
 export type SmtpOutcome = "ACKNOWLEDGED" | "REJECTED" | "PRE_SUBMISSION_FAILURE" | "UNKNOWN";
-export interface SmtpAdapter { submit(messageIdHeader: string, mime: Buffer): Promise<SmtpOutcome>; }
+export interface SmtpEnvelope { readonly from: string; readonly to: readonly string[]; }
+export interface SmtpAdapter { submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome>; }
 
 export interface NodemailerSmtpOptions {
   readonly host: string;
@@ -39,7 +40,7 @@ function isProviderRejection(error: MailError): boolean {
 }
 
 function isPreSubmissionConnectionFailure(error: MailError): boolean {
-  return error.command === "CONN" || error.code === "ECONNECTION" || error.code === "ETIMEDOUT";
+  return error.command === "CONN";
 }
 
 /** Nodemailer SMTP adapter. It never retries and never emits message content. */
@@ -47,7 +48,7 @@ export class NodemailerSmtpAdapter implements SmtpAdapter {
   private readonly transport: Pick<ReturnType<typeof nodemailer.createTransport>, "sendMail"> | undefined;
   constructor(private readonly options: NodemailerSmtpOptions) { this.transport = options.transport; }
 
-  async submit(_messageIdHeader: string, mime: Buffer): Promise<SmtpOutcome> {
+  async submit(_messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome> {
     let credential;
     try {
       credential = await this.options.credentials.get(this.options.credentialRef);
@@ -57,7 +58,7 @@ export class NodemailerSmtpAdapter implements SmtpAdapter {
     if (!credential) return "PRE_SUBMISSION_FAILURE";
     try {
       const transport = this.transport ?? nodemailer.createTransport({ host: this.options.host, port: this.options.port, secure: this.options.secure, auth: credential });
-      const info = await transport.sendMail({ raw: Buffer.from(mime) });
+      const info = await transport.sendMail({ raw: Buffer.from(mime), envelope: { from: envelope.from, to: [...envelope.to] } });
       return Array.isArray(info.rejected) && info.rejected.length > 0 ? "REJECTED" : "ACKNOWLEDGED";
     } catch (error) {
       const mailError = error as MailError;
@@ -68,7 +69,7 @@ export class NodemailerSmtpAdapter implements SmtpAdapter {
   }
 }
 
-export class FakeSmtpAdapter implements SmtpAdapter { readonly submissions: Array<{ messageIdHeader: string; mime: Buffer }> = []; constructor(private readonly outcome: SmtpOutcome = "ACKNOWLEDGED") {} async submit(messageIdHeader: string, mime: Buffer): Promise<SmtpOutcome> { this.submissions.push({ messageIdHeader, mime }); return this.outcome; } }
+export class FakeSmtpAdapter implements SmtpAdapter { readonly submissions: Array<{ messageIdHeader: string; mime: Buffer; envelope: SmtpEnvelope }> = []; constructor(private readonly outcome: SmtpOutcome = "ACKNOWLEDGED") {} async submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome> { this.submissions.push({ messageIdHeader, mime, envelope: { from: envelope.from, to: [...envelope.to] } }); return this.outcome; } }
 export class FakeImapAdapter implements ImapAdapter { constructor(private readonly verified = new Set<string>()) {} async verifySent(messageIdHeader: string): Promise<boolean> { return this.verified.has(messageIdHeader); } }
 
 export interface MailFolder { readonly path: string; readonly name: string; readonly delimiter: string; readonly specialUse?: string; }
