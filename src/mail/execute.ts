@@ -1,12 +1,11 @@
 import { OutboxRepository } from "../outbox/repository.js";
 import type { SmtpAdapter, ImapAdapter } from "./adapters.js";
-import { immutableMime } from "./prepare.js";
 export async function executeOnce(repo: OutboxRepository, smtp: SmtpAdapter, imap: ImapAdapter, messageId: string, owner: string): Promise<ReturnType<OutboxRepository["get"]>> {
+  const mime = repo.getRawMime(messageId);
   const current = repo.get(messageId); if (current.state === "SENT_VERIFIED") return current;
   const claimed = repo.claim(messageId, owner, 30_000);
   let smtpAttemptStarted = false;
   try {
-    const mime = immutableMime(claimed);
     smtpAttemptStarted = true;
     const outcome = await smtp.submit(claimed.messageIdHeader, mime);
     if (outcome === "REJECTED") return repo.transition(messageId, "FAILED_PERMANENT", "provider rejected submission");

@@ -18,8 +18,17 @@ function safeError(error: unknown, correlationId: string): { ok: false; error: {
   return { ok: false, error: { code: "INTERNAL_SAFE_FAILURE", message: "The mail operation could not be completed safely.", correlationId } };
 }
 
+function publicValue(value: unknown): unknown {
+  if (Buffer.isBuffer(value)) return "[BINARY_OMITTED]";
+  if (Array.isArray(value)) return value.map(publicValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "rawMime" && key !== "raw_mime").map(([key, item]) => [key, publicValue(item)]));
+  }
+  return value;
+}
+
 function jsonContent(value: unknown): { type: "text"; text: string } {
-  return { type: "text", text: JSON.stringify(redact(value)) };
+  return { type: "text", text: JSON.stringify(redact(publicValue(value))) };
 }
 
 async function invoke<T>(parse: (value: unknown) => T, input: unknown, operation: (value: T, correlationId: string) => Promise<unknown> | unknown) {
@@ -27,7 +36,7 @@ async function invoke<T>(parse: (value: unknown) => T, input: unknown, operation
   try {
     const parsed = parse(input);
     const value = await operation(parsed, correlationId);
-    const structuredContent = redact({ ok: true, value, correlationId }) as Record<string, unknown>;
+    const structuredContent = redact(publicValue({ ok: true, value, correlationId })) as Record<string, unknown>;
     return { content: [jsonContent(structuredContent)], structuredContent };
   } catch (error) {
     const structuredContent = safeError(error, correlationId);

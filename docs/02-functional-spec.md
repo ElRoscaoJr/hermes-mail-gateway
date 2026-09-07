@@ -34,7 +34,7 @@ The gateway is an authority for local intent and observed delivery state. It is 
 
 - Inputs: `accountId`, sender policy, recipients, subject, plain-text and/or HTML body, optional reply/forward reference, attachment descriptors, and a client-supplied idempotency key.
 - Preconditions: account exists and is enabled; at least one valid recipient exists; sender is permitted by account configuration; message size, recipient count, header lengths, and attachment limits are within policy; reply/forward references resolve when supplied; attachment paths are inside configured allow-listed roots.
-- Processing: normalize and validate addresses and headers; resolve reply/forward headers from the referenced message; hash and size-check attachments without returning their contents; assign a Message-ID before persistence; construct an immutable message intent; insert the intent and idempotency record in one SQLite transaction.
+- Processing: normalize and validate addresses and headers; resolve reply/forward headers from the referenced message; derive attachment roots from the account projection; hash and size-check attachments; assign a Message-ID; build complete MIME before persistence; insert the intent, raw MIME BLOB, and idempotency record in one SQLite transaction.
 - Outputs: `messageId` (gateway identifier), assigned `messageIdHeader`, `accountId`, immutable content summary, attachment hashes/sizes, current state `PREPARED`, and a redacted audit event. No network send occurs.
 - Idempotency: repeating the same idempotency key for the same account and equivalent request returns the original preparation; reusing it for a different request is rejected as a conflict.
 - Errors: validation, unsupported content, attachment policy, duplicate-key conflict, account disabled, persistence failure, and internal serialization failure. No preparation is returned as sendable if its transaction did not commit.
@@ -92,7 +92,8 @@ Account configuration is local operator state and is not accepted from MCP tool 
 | `from_address` / recipient set | Normalized addresses; recipient values are stored only as required for delivery/audit. |
 | `subject` / body representation | Immutable persisted MIME inputs; retention-controlled and access-restricted. |
 | `reply_headers` | Validated `In-Reply-To` and `References`, if applicable. |
-| `attachment_manifest` | Allow-listed path metadata, content hash, size, and MIME type; content is revalidated before send. |
+| `attachment_manifest` | Allow-listed path metadata, content hash, size, and MIME type; source paths are read only during preparation. |
+| `raw_mime` | Complete immutable MIME bytes stored as a SQLite BLOB in the same transaction as the outbox and idempotency rows; never returned by MCP. |
 | `state` | Enumerated state machine below. |
 | `attempt_owner` / lease | Short-lived execution ownership to prevent concurrent sends. |
 | `created_at` / `updated_at` | UTC timestamps. |
@@ -154,9 +155,9 @@ There is no transition from `OUTCOME_UNKNOWN` to a blind resend. A future explic
 
 ### MIME and attachment handling
 
-- Use a mature MIME library. The gateway validates content type, header encoding, line lengths, attachment roots, file existence, size, and SHA-256 hash before preparation and again before execution.
+- Use a mature MIME library. The gateway validates content type, header encoding, line lengths, attachment roots, file existence, size, and SHA-256 hash while building MIME before preparation persistence.
 - Attachment paths are resolved only under configured allow-listed roots. Symlink escapes, special files, path traversal, and changed hashes are rejected.
-- The exact MIME representation is persisted or deterministically reconstructable from immutable inputs before SMTP submission.
+- The exact MIME representation is persisted as raw bytes before SMTP submission. Execution never regenerates MIME or rereads attachment paths.
 
 ### SQLite
 

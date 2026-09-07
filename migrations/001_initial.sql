@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
   message_id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(account_id),
   idempotency_key TEXT NOT NULL, message_id_header TEXT NOT NULL UNIQUE,
   from_address TEXT NOT NULL, recipients TEXT NOT NULL, subject TEXT NOT NULL,
-  text_body TEXT, html_body TEXT, attachment_manifest TEXT NOT NULL,
+  text_body TEXT, html_body TEXT, attachment_manifest TEXT NOT NULL, raw_mime BLOB NOT NULL,
   state TEXT NOT NULL, attempt_owner TEXT, lease_until TEXT, provider_evidence TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   UNIQUE(account_id, idempotency_key)

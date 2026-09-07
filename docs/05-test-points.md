@@ -8,7 +8,17 @@
 - State transitions and one-owner execution leases are covered.
 - Message-ID and immutable MIME stability, attachment confinement/hash checks, redaction, and unknown-outcome no-retry behavior are covered.
 
-Real-provider, mailbox, credential, transport, and systemd tests are intentionally deferred.
+Real-provider, mailbox, real-keychain, and systemd tests are intentionally deferred.
+
+## Slice 3 — local provider adapters
+
+- [x] `cross-keychain` is pinned exactly at 1.1.0; tests parse references only and never call a real keychain.
+- [x] Nodemailer 10.0.1 stream transport covers Message-ID, text/plain, optional HTML, attachment bytes, and manifest hash/size validation.
+- [x] Injected Nodemailer transports cover provider rejection, pre-submission connection failure, and unknown post-attempt exceptions.
+- [x] No provider host, mailbox, credential, or message send is used by the unit tests.
+- [x] MIME is built before `OutboxRepository.prepare`, bad attachments leave zero outbox/idempotency rows, and execution submits the stored BLOB after source deletion.
+- [x] Raw MIME is excluded from `PreparedMessage` and both MCP result representations.
+- [x] Verification results for this slice: typecheck, all local tests, and build pass; `npm audit` result is recorded in `docs/PROGRESS.md`.
 
 ## Slice 2 — real MCP boundary
 

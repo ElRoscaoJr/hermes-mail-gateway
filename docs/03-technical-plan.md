@@ -58,8 +58,8 @@ Components:
 
 Data flow rules:
 
-- `mail_prepare` must commit SQLite state before network activity is permitted.
-- `mail_execute` reads immutable persisted intent; callers cannot modify content at execution time.
+- `mail_prepare` must build complete MIME and commit its raw bytes in SQLite before network activity is permitted.
+- `mail_execute` reads the immutable raw MIME BLOB before claiming; callers cannot modify content and execution never rereads attachment paths or regenerates MIME.
 - Provider interaction results are classified before state transition and audit append.
 - Sent verification is an explicit observation using the exact preassigned Message-ID.
 - Any ambiguous post-submission condition stops execution and requires explicit verification/recovery.

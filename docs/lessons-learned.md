@@ -20,3 +20,10 @@
 - What failed: Using a real third-party mailbox for mechanism testing.
 - Working solution: Restrict every test recipient to the operator-controlled self-test address configured outside the repository.
 - Rule for next time: Real-provider tests are self-mail only, always.
+
+## L-004 — MIME must be durable before claiming execution
+- Problem: Rebuilding MIME during execution made a prepared message depend on mutable attachment paths.
+- Where: Provider-adapter send path.
+- What failed: Claiming an outbox row and then rereading attachment files to construct the submission.
+- Working solution: Build and validate complete MIME from account-derived roots before `OutboxRepository.prepare`, store it as a raw SQLite BLOB atomically with idempotency, and retrieve it before claiming.
+- Rule for next time: Execution submits only the stored bytes; it never regenerates MIME or rereads preparation-time sources.

@@ -11,7 +11,7 @@ Methods:
 - `mailPrepare(input, context)` — implements `mail_prepare`; the sender is supplied by the account projection, not MCP input.
 - `mailExecute(input, context)` — implements `mail_execute`.
 
-Each call receives the fixed authorized caller `Hermes main` and a fresh UUID `correlationId`. Implementations may return a value or throw `SafeError`; unexpected exceptions are converted to `INTERNAL_SAFE_FAILURE`.
+Each call receives the fixed authorized caller `Hermes main` and a fresh UUID `correlationId`. Implementations may return a value or throw `SafeError`; unexpected exceptions are converted to `INTERNAL_SAFE_FAILURE`. Raw MIME is an internal repository value and is omitted from MCP content and structured results; binary values are never serialized as public tool output.
 
 ## `createMcpServer(service)`
 

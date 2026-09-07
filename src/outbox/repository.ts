@@ -9,7 +9,7 @@ const transitions: Record<OutboxState, readonly OutboxState[]> = {
   SENT_VERIFIED: [], FAILED_PERMANENT: [], FAILED_RETRY_BLOCKED: [], CANCELLED: []
 };
 const now = () => new Date().toISOString();
-export interface PrepareInput { accountId: string; idempotencyKey: string; fromAddress: string; recipients: readonly string[]; subject: string; textBody?: string; htmlBody?: string; attachments: readonly unknown[]; requestDigest: string; messageId: string; messageIdHeader: string; audit?: { correlationId: string; caller: string; tool: string; metadata: unknown }; }
+export interface PrepareInput { accountId: string; idempotencyKey: string; fromAddress: string; recipients: readonly string[]; subject: string; textBody?: string; htmlBody?: string; attachments: readonly unknown[]; rawMime: Buffer; requestDigest: string; messageId: string; messageIdHeader: string; audit?: { correlationId: string; caller: string; tool: string; metadata: unknown }; }
 export class OutboxRepository {
   constructor(private readonly db: Database.Database) {}
   prepare(input: PrepareInput): PreparedMessage {
@@ -17,7 +17,7 @@ export class OutboxRepository {
     if (existing) { if (existing.request_digest !== input.requestDigest) throw new SafeError("IDEMPOTENCY_CONFLICT", "Idempotency key was reused with a different request."); return this.get(existing.message_id); }
     const created = now();
     const transaction = this.db.transaction(() => {
-      this.db.prepare("INSERT INTO outbox_messages(message_id, account_id, idempotency_key, message_id_header, from_address, recipients, subject, text_body, html_body, attachment_manifest, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?, ?)").run(input.messageId, input.accountId, input.idempotencyKey, input.messageIdHeader, input.fromAddress, JSON.stringify(input.recipients), input.subject, input.textBody ?? null, input.htmlBody ?? null, JSON.stringify(input.attachments), created, created);
+      this.db.prepare("INSERT INTO outbox_messages(message_id, account_id, idempotency_key, message_id_header, from_address, recipients, subject, text_body, html_body, attachment_manifest, raw_mime, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?, ?)").run(input.messageId, input.accountId, input.idempotencyKey, input.messageIdHeader, input.fromAddress, JSON.stringify(input.recipients), input.subject, input.textBody ?? null, input.htmlBody ?? null, JSON.stringify(input.attachments), input.rawMime, created, created);
       this.db.prepare("INSERT INTO idempotency_keys(account_id, idempotency_key, message_id, request_digest, created_at) VALUES (?, ?, ?, ?, ?)").run(input.accountId, input.idempotencyKey, input.messageId, input.requestDigest, created);
       if (input.audit) this.db.prepare("INSERT INTO audit_events(event_id, correlation_id, caller, tool, account_id, message_id, old_state, new_state, outcome_code, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, NULL, 'PREPARED', 'OK', ?, ?)").run(randomUUID(), input.audit.correlationId, input.audit.caller, input.audit.tool, input.accountId, input.messageId, JSON.stringify(redact(input.audit.metadata)), created);
     });
@@ -25,6 +25,7 @@ export class OutboxRepository {
     return this.get(input.messageId);
   }
   get(messageId: string): PreparedMessage { const row = this.db.prepare("SELECT * FROM outbox_messages WHERE message_id = ?").get(messageId) as Record<string, unknown> | undefined; if (!row) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); return this.map(row); }
+  getRawMime(messageId: string): Buffer { const row = this.db.prepare("SELECT raw_mime FROM outbox_messages WHERE message_id = ?").get(messageId) as { raw_mime: Buffer } | undefined; if (!row) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); return Buffer.from(row.raw_mime); }
   transition(messageId: string, next: OutboxState, evidence?: string): PreparedMessage {
     const current = this.get(messageId); if (!transitions[current.state].includes(next)) throw new SafeError("STATE_CONFLICT", `Transition from ${current.state} to ${next} is not permitted.`);
     this.db.prepare("UPDATE outbox_messages SET state = ?, provider_evidence = COALESCE(?, provider_evidence), updated_at = ? WHERE message_id = ?").run(next, evidence ?? null, now(), messageId); return this.get(messageId);

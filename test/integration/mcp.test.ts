@@ -11,7 +11,7 @@ test("MCP exposes exactly four tools and rejects invalid public input", async ()
   const service: MailApplicationService = {
     mailAccounts: () => ({ accounts: [{ accountId: "acct", credentialRef: "keychain:private" }] }),
     mailQuery: () => ({ messages: [] }),
-    mailPrepare: (input) => { calls.push(`prepare:${input.accountId}`); return { state: "PREPARED", accountId: input.accountId }; },
+    mailPrepare: (input) => { calls.push(`prepare:${input.accountId}`); return { state: "PREPARED", accountId: input.accountId, rawMime: Buffer.from("From: secret@example.test\r\n\r\nbody") }; },
     mailExecute: (input) => {
       if (input.accountId !== "acct") throw new SafeError("ACCOUNT_NOT_FOUND", "Account was not found.");
       return { state: input.verifyOnly ? "VERIFIED_ONLY" : "SENT_VERIFIED", accountId: input.accountId };
@@ -35,6 +35,8 @@ test("MCP exposes exactly four tools and rejects invalid public input", async ()
     accountId: "acct", idempotencyKey: "idem-123456", recipients: ["recipient@example.test"], subject: "Synthetic"
   } });
   assert.equal(prepared.isError, undefined);
+  assert.doesNotMatch(JSON.stringify(prepared.content), /secret@example\.test|From:/i);
+  assert.doesNotMatch(JSON.stringify(prepared.structuredContent), /rawMime|secret@example\.test|From:/i);
   assert.deepEqual(calls, ["prepare:acct"]);
 
   const execute = await client.callTool({ name: "mail_execute", arguments: { accountId: "acct", messageId: "message", verifyOnly: true } });

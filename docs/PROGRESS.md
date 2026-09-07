@@ -31,8 +31,8 @@
 | 8 Website | n/a | No website intent |
 
 ## Current position
-- Phase: 5 — Development, real MCP boundary slice complete.
-- Next action: Implement provider-free application-service adapters behind the MCP seam; keep provider credentials, real-mail tests, and systemd deployment deferred.
+- Phase: 5 — Development, provider-adapter slice complete.
+- Next action: Continue with the next provider-free adapter slice or begin the documented real-provider setup only as an explicit operator action; keep credentials and sends outside local tests.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-07 — MCP boundary slice implemented. `npm run typecheck` passes; `npm test` builds and passes 6 test files with 0 failures, including the in-memory SDK smoke test for the exact four-tool surface and strict invalid-input rejection. `npm run build` passes. `npm audit` could not complete because the registry was unreachable in this environment. No real mailbox, credential, email send, or systemd unit used.
+Last updated: 2026-09-07 — Provider-adapter reliability correction implemented. MIME is built before persistence, stored as an atomic raw BLOB, and submitted without rereading sources; regression tests cover invalid attachments, source deletion, and MCP omission. `npm run typecheck` passes; `npm test` builds and passes 25 tests across 7 test files with 0 failures; `npm run build` passes; `npm audit` reports 0 vulnerabilities. No real keychain entry, mailbox, credential, email send, or systemd unit used.

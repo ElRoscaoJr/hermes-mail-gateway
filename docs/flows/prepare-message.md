@@ -9,16 +9,16 @@ Hermes has decided to send a new message, reply, or forward and invokes `mail_pr
 1. Hermes supplies `accountId`, content, recipients, optional reply/forward reference, attachment descriptors, and an idempotency key.
 2. The gateway authenticates the caller and validates all fields, including unknown-field rejection and sender policy.
 3. The gateway resolves reply headers from the referenced message when applicable.
-4. The gateway validates attachment roots, canonical paths, file types, sizes, and hashes.
-5. The gateway assigns a unique Message-ID and constructs the immutable MIME intent.
-6. In one SQLite transaction, the gateway inserts the outbox row, idempotency mapping, and audit event.
-7. The gateway returns the durable gateway message ID and `PREPARED` state. No SMTP or IMAP send occurs.
+4. The gateway derives attachment roots from the account projection, validates canonical paths, file types, sizes, and hashes, and builds the complete MIME.
+5. The gateway assigns a unique Message-ID and persists those exact MIME bytes.
+6. In one SQLite transaction, the gateway inserts the outbox row, raw MIME BLOB, idempotency mapping, and audit event.
+7. The gateway returns the durable gateway message ID and `PREPARED` state. No SMTP or IMAP send occurs and raw MIME is not returned.
 
 ## Branches and failure paths
 
 - Same idempotency key and same request digest: return the original preparation.
 - Same key and different digest: return `IDEMPOTENCY_CONFLICT`; do not overwrite.
-- Invalid or changed attachment: reject before persistence.
+- Invalid or changed attachment: reject before persistence; no outbox or idempotency row is created.
 - SQLite transaction failure: return `DATABASE_UNAVAILABLE`; no preparation is executable.
 - Account disabled or sender disallowed: reject before persistence.
 
