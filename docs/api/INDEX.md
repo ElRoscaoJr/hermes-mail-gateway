@@ -3,6 +3,9 @@
 | Surface | Location | Purpose |
 |---|---|---|
 | Four MCP input schemas | `src/mcp/schemas.ts` | Strict schemas for `mail_accounts`, `mail_query`, `mail_prepare`, and `mail_execute`. |
+| `MailApplicationService` | `src/application/service.ts` | Provider-free four-operation application seam and per-call context. |
+| `createMcpServer(service)` | `src/mcp/server.ts` | Exactly four strict, redacting MCP tools with safe error mapping. |
+| `startStdio(service)` | `src/stdio.ts` | SDK stdio composition entrypoint; stdout is protocol-only. |
 | Safe errors/results | `src/errors.ts` | Stable error taxonomy and typed result envelope. |
 | Account projection repository | `src/outbox/accounts.ts` | Secret-free account configuration projection. |
 | Outbox repository | `src/outbox/repository.ts` | Atomic preparation, idempotency, transitions, leases, and audit append. |

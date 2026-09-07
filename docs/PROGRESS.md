@@ -25,14 +25,14 @@
 | 2 Functional spec | done | docs/02-functional-spec.md, docs/03-technical-plan.md, docs/flows/, docs/budget.md |
 | 3 Design handoff | n/a | No UI |
 | 4 Faithful build | n/a | No UI |
-| 5 Development | in progress | docs/05-test-points.md; local durable foundation implemented |
+| 5 Development | in progress | docs/05-test-points.md; durable foundation and provider-free MCP boundary implemented |
 | 6 Documentation | pending | docs/architecture.md, docs/api/ |
 | 7 Release | pending | docs/07-release.md |
 | 8 Website | n/a | No website intent |
 
 ## Current position
-- Phase: 5 — Development, scaffold and first test point.
-- Next action: Wire the MCP transport and real provider adapters in a later slice; keep provider credentials, real-mail tests, and systemd deployment deferred.
+- Phase: 5 — Development, real MCP boundary slice complete.
+- Next action: Implement provider-free application-service adapters behind the MCP seam; keep provider credentials, real-mail tests, and systemd deployment deferred.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-07 — `npm run typecheck` passes; `npm test` builds and passes 15 tests across 5 test files with 0 failures, including SQLite read-back coverage proving audit metadata is redacted before persistence. No real mailbox, credential, email send, or systemd unit used.
+Last updated: 2026-09-07 — MCP boundary slice implemented. `npm run typecheck` passes; `npm test` builds and passes 6 test files with 0 failures, including the in-memory SDK smoke test for the exact four-tool surface and strict invalid-input rejection. `npm run build` passes. `npm audit` could not complete because the registry was unreachable in this environment. No real mailbox, credential, email send, or systemd unit used.

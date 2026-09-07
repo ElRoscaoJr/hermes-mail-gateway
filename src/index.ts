@@ -5,3 +5,6 @@ export { AccountRepository } from "./outbox/accounts.js";
 export { OutboxRepository } from "./outbox/repository.js";
 export { SafeError } from "./errors.js";
 export { prepareMessage, messageIdHeader } from "./mail/prepare.js";
+export type { MailApplicationService, ApplicationCallContext, MailAccountsInput, MailQueryInput, MailPrepareInput, MailExecuteInput } from "./application/service.js";
+export { createMcpServer } from "./mcp/server.js";
+export { startStdio } from "./stdio.js";
