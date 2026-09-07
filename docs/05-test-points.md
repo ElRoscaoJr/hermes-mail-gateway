@@ -14,7 +14,7 @@ Real-provider, mailbox, real-keychain, and systemd tests are intentionally defer
 
 - [x] `cross-keychain` is pinned exactly at 1.1.0; tests parse references only and never call a real keychain.
 - [x] Nodemailer 10.0.1 stream transport covers Message-ID, text/plain, optional HTML, attachment bytes, and manifest hash/size validation.
-- [x] Injected Nodemailer transports cover provider rejection, pre-submission connection failure, and unknown post-attempt exceptions.
+- [x] Injected Nodemailer transports cover provider rejection, pre-submission connection failure, unknown post-attempt exceptions, and bounded non-secret SMTP evidence.
 - [x] No provider host, mailbox, credential, or message send is used by the unit tests.
 - [x] MIME is built before `OutboxRepository.prepare`, bad attachments leave zero outbox/idempotency rows, and execution submits the stored BLOB after source deletion.
 - [x] Raw MIME is excluded from `PreparedMessage` and both MCP result representations.

@@ -32,14 +32,14 @@
 
 ## Current position
 - Phase: 5 — Development, application-service wiring slice complete.
-- Next action: Parent review of the separate IMAP/SMTP credential-reference implementation; only then consider an explicit operator-run self-test with credentials/configuration outside the repository.
+- Next action: Diagnose the remaining controlled-provider execution result using bounded SMTP evidence; do not retry any ambiguous real send automatically.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
 - Open Design Requests: none
-- Unverified external steps/assets: Real mailbox integration tests are pending and must use only the operator-controlled self-test address configured outside the repository.
+- Unverified external steps/assets: Gmail IMAP and SMTP authentication now pass through the corrected local account reference; one complete gateway send remained `OUTCOME_UNKNOWN` and was not retried. Further real sends require explicit operator review.
 - Phase 2 operational values still to pin before implementation: local authorization-token provisioning, account-specific folder names, retention periods, and rate/size limits. These must not be filled with credentials or real mailbox data in repository docs.
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-08 — Added optional separate SMTP credential references with nullable SQLite migration 2, legacy fallback, repository round-trip, runtime adapter selection, and safe-projection coverage. Typecheck, full tests, integration tests, build, offline high-severity audit, and diff checks pass. No real credentials, mailbox, email send, or network connection is used.
+Last updated: 2026-09-08 — Corrected the Gmail login identity mismatch in the operator-managed configuration, verified gateway IMAP and SMTP authentication, and ran one controlled end-to-end gateway attempt without retrying its ambiguous result. Added bounded SMTP outcome evidence and regression coverage without exposing raw errors or changing the four-tool API. Typecheck, 46 local tests, build, audit, and diff checks pass. The real-provider result remains explicitly separated from local test evidence.

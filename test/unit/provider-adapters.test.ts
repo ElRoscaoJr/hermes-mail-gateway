@@ -49,24 +49,25 @@ function adapter(sendMail: (options: unknown) => Promise<{ message: Buffer; reje
 const envelope = { from: baseMessage.fromAddress, to: baseMessage.recipients };
 
 test("SMTP adapter classifies provider rejection", async () => {
-  assert.equal(await adapter(async () => { throw { responseCode: 550, response: "rejected" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), "REJECTED");
+  const result = await adapter(async () => { throw { responseCode: 550, response: "rejected" }; }).submit("<fixed@id>", Buffer.from("body"), envelope);
+  assert.deepEqual(result, { outcome: "REJECTED", evidence: "provider_rejected:550" });
 });
 
 test("SMTP adapter classifies an accepted provider response", async () => {
-  assert.equal(await adapter(async () => ({ message: Buffer.from("accepted"), rejected: [] })).submit("<fixed@id>", Buffer.from("body"), envelope), "ACKNOWLEDGED");
+  assert.deepEqual(await adapter(async () => ({ message: Buffer.from("accepted"), rejected: [] })).submit("<fixed@id>", Buffer.from("body"), envelope), { outcome: "ACKNOWLEDGED", evidence: "smtp_acknowledged" });
 });
 
 test("SMTP adapter passes the explicit envelope with raw MIME", async () => {
   let options: unknown;
   const result = await adapter(async (value) => { options = value; return { message: Buffer.from("accepted"), rejected: [] }; }).submit("<fixed@id>", Buffer.from("stored raw MIME"), envelope);
-  assert.equal(result, "ACKNOWLEDGED");
+  assert.deepEqual(result, { outcome: "ACKNOWLEDGED", evidence: "smtp_acknowledged" });
   assert.deepEqual(options, { raw: Buffer.from("stored raw MIME"), envelope: { from: "sender@example.test", to: ["recipient@example.test"] } });
 });
 
 test("SMTP adapter resolves its independent credential reference", async () => {
   let requested: string | undefined;
   const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async (reference) => { requested = reference; return { username: "user", password: "secret" }; } }, transport: { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }) } });
-  assert.equal(await smtp.submit("<fixed@id>", Buffer.from("body"), envelope), "ACKNOWLEDGED");
+  assert.equal((await smtp.submit("<fixed@id>", Buffer.from("body"), envelope)).outcome, "ACKNOWLEDGED");
   assert.equal(requested, "keychain:smtp/account");
 });
 
@@ -74,19 +75,25 @@ test("local stream transport acknowledges raw submission with the explicit envel
   const transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: "unix" });
   const raw = Buffer.from("Message-ID: <fixed@id>\r\nFrom: sender@example.test\r\nTo: recipient@example.test\r\nSubject: Synthetic\r\n\r\nbody");
   const result = await new NodemailerSmtpAdapter({ host: "unused.example.test", port: 1, secure: false, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transport }).submit("<fixed@id>", raw, envelope);
-  assert.equal(result, "ACKNOWLEDGED");
+  assert.equal(result.outcome, "ACKNOWLEDGED");
 });
 
 test("SMTP adapter classifies pre-submission connection failure", async () => {
-  assert.equal(await adapter(async () => { throw { code: "ECONNECTION", command: "CONN" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), "PRE_SUBMISSION_FAILURE");
+  assert.deepEqual(await adapter(async () => { throw { code: "ECONNECTION", command: "CONN" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), { outcome: "PRE_SUBMISSION_FAILURE", evidence: "smtp_error:connection:ECONNECTION" });
 });
 
 test("SMTP adapter classifies exceptions after the SMTP attempt as unknown", async () => {
-  assert.equal(await adapter(async () => { throw { code: "ESOCKET", command: "DATA" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), "UNKNOWN");
+  assert.deepEqual(await adapter(async () => { throw { code: "ESOCKET", command: "DATA" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), { outcome: "UNKNOWN", evidence: "smtp_error:smtp_command:ESOCKET" });
 });
 
 test("connection timeout without an explicit connection phase remains unknown", async () => {
-  assert.equal(await adapter(async () => { throw { code: "ETIMEDOUT" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), "UNKNOWN");
+  assert.deepEqual(await adapter(async () => { throw { code: "ETIMEDOUT" }; }).submit("<fixed@id>", Buffer.from("body"), envelope), { outcome: "UNKNOWN", evidence: "smtp_error:unknown:ETIMEDOUT" });
+});
+
+test("SMTP diagnostics are bounded and never include provider response text", async () => {
+  const result = await adapter(async () => { throw { code: "ESECRET", command: "DATA", response: "password=must-not-escape" }; }).submit("<fixed@id>", Buffer.from("body"), envelope);
+  assert.deepEqual(result, { outcome: "UNKNOWN", evidence: "smtp_error:smtp_command:ESECRET" });
+  assert.doesNotMatch(result.evidence, /password|must-not-escape/i);
 });
 
 const imapAccount: AccountProjection = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX-custom", sentFolder: "Archive/Sent-custom" };

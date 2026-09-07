@@ -55,3 +55,10 @@
 - What failed: Wrapping SMTP submission and IMAP verification in one catch block.
 - Working solution: Classify the SMTP result first; guard exact Sent verification separately and map false/provider failure to `SENT_UNVERIFIED`.
 - Rule for next time: `OUTCOME_UNKNOWN` means only that SMTP submission was ambiguous; never resend after either ambiguous submission or unverified Sent confirmation.
+
+## L-009 — Preserve bounded SMTP failure evidence
+- Problem: A controlled gateway send returned `OUTCOME_UNKNOWN`, but the adapter discarded the Nodemailer error category, making a transport/envelope/provider diagnosis impossible.
+- Where: `src/mail/adapters.ts` SMTP submission classification.
+- What failed: Mapping every non-rejection/non-connection error to a bare `UNKNOWN` result.
+- Working solution: Return a typed outcome with a bounded evidence token containing only a safe phase/category and, for provider rejection, a validated 4xx/5xx response code; never retain response text, credentials, or message data.
+- Rule for next time: Preserve enough redacted provider evidence to diagnose an ambiguous send without weakening no-retry semantics or exposing secrets.

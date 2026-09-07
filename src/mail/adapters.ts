@@ -13,7 +13,8 @@ export interface ImapAdapter {
 }
 export type SmtpOutcome = "ACKNOWLEDGED" | "REJECTED" | "PRE_SUBMISSION_FAILURE" | "UNKNOWN";
 export interface SmtpEnvelope { readonly from: string; readonly to: readonly string[]; }
-export interface SmtpAdapter { submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome>; }
+export interface SmtpSubmissionResult { readonly outcome: SmtpOutcome; /** Bounded operator evidence; never a provider transcript or message data. */ readonly evidence: string; }
+export interface SmtpAdapter { submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome | SmtpSubmissionResult>; }
 
 export interface NodemailerSmtpOptions {
   readonly host: string;
@@ -43,33 +44,44 @@ function isPreSubmissionConnectionFailure(error: MailError): boolean {
   return error.command === "CONN";
 }
 
+function safeErrorCode(code: unknown): string {
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,31}$/.test(code) ? code : "UNCLASSIFIED";
+}
+
+function errorEvidence(error: MailError): string {
+  const phase = error.command === "CONN" ? "connection" : error.command === undefined ? "unknown" : "smtp_command";
+  const code = safeErrorCode(error.code);
+  return `smtp_error:${phase}:${code}`;
+}
+
 /** Nodemailer SMTP adapter. It never retries and never emits message content. */
 export class NodemailerSmtpAdapter implements SmtpAdapter {
   private readonly transport: Pick<ReturnType<typeof nodemailer.createTransport>, "sendMail"> | undefined;
   constructor(private readonly options: NodemailerSmtpOptions) { this.transport = options.transport; }
 
-  async submit(_messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome> {
+  async submit(_messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpSubmissionResult> {
     let credential;
     try {
       credential = await this.options.credentials.get(this.options.credentialRef);
     } catch {
-      return "PRE_SUBMISSION_FAILURE";
+      return { outcome: "PRE_SUBMISSION_FAILURE", evidence: "credential_unavailable" };
     }
-    if (!credential) return "PRE_SUBMISSION_FAILURE";
+    if (!credential) return { outcome: "PRE_SUBMISSION_FAILURE", evidence: "credential_unavailable" };
     try {
       const transport = this.transport ?? nodemailer.createTransport({ host: this.options.host, port: this.options.port, secure: this.options.secure, auth: credential });
       const info = await transport.sendMail({ raw: Buffer.from(mime), envelope: { from: envelope.from, to: [...envelope.to] } });
-      return Array.isArray(info.rejected) && info.rejected.length > 0 ? "REJECTED" : "ACKNOWLEDGED";
+      if (Array.isArray(info.rejected) && info.rejected.length > 0) return { outcome: "REJECTED", evidence: "provider_rejected" };
+      return { outcome: "ACKNOWLEDGED", evidence: "smtp_acknowledged" };
     } catch (error) {
       const mailError = error as MailError;
-      if (isProviderRejection(mailError)) return "REJECTED";
-      if (isPreSubmissionConnectionFailure(mailError)) return "PRE_SUBMISSION_FAILURE";
-      return "UNKNOWN";
+      if (isProviderRejection(mailError)) return { outcome: "REJECTED", evidence: typeof mailError.responseCode === "number" && Number.isInteger(mailError.responseCode) && mailError.responseCode >= 400 && mailError.responseCode <= 599 ? `provider_rejected:${mailError.responseCode}` : "provider_rejected" };
+      if (isPreSubmissionConnectionFailure(mailError)) return { outcome: "PRE_SUBMISSION_FAILURE", evidence: errorEvidence(mailError) };
+      return { outcome: "UNKNOWN", evidence: errorEvidence(mailError) };
     }
   }
 }
 
-export class FakeSmtpAdapter implements SmtpAdapter { readonly submissions: Array<{ messageIdHeader: string; mime: Buffer; envelope: SmtpEnvelope }> = []; constructor(private readonly outcome: SmtpOutcome = "ACKNOWLEDGED") {} async submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome> { this.submissions.push({ messageIdHeader, mime, envelope: { from: envelope.from, to: [...envelope.to] } }); return this.outcome; } }
+export class FakeSmtpAdapter implements SmtpAdapter { readonly submissions: Array<{ messageIdHeader: string; mime: Buffer; envelope: SmtpEnvelope }> = []; constructor(private readonly outcome: SmtpOutcome = "ACKNOWLEDGED") {} async submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpSubmissionResult> { this.submissions.push({ messageIdHeader, mime, envelope: { from: envelope.from, to: [...envelope.to] } }); return { outcome: this.outcome, evidence: `fake:${this.outcome.toLowerCase()}` }; } }
 export class FakeImapAdapter implements ImapAdapter { constructor(private readonly verified = new Set<string>()) {} async verifySent(messageIdHeader: string): Promise<boolean> { return this.verified.has(messageIdHeader); } }
 
 export interface MailFolder { readonly path: string; readonly name: string; readonly delimiter: string; readonly specialUse?: string; }
