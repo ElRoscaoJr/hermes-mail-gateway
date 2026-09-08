@@ -1,7 +1,7 @@
 # Production Completeness Audit
 
 Date: 2026-09-08
-Scope: Hermes Mail Gateway at commit `269edb2`, after the real Gmail/Zoho folder, health, send, attachment, routing, thread, and Sent-verification checks.
+Scope: Hermes Mail Gateway working tree after the structured-search and bounded-attachment-download parity slice; no commit was created and no provider was contacted.
 
 ## Executive conclusion
 
@@ -9,7 +9,7 @@ The project has a strong provider-independent send core: durable raw MIME, idemp
 
 It is **not yet a complete production mail connector**. It is currently best described as a reliable multi-account send-and-query gateway. A production connector also needs safe mailbox mutations, drafts, stable mailbox identity across UIDVALIDITY changes, crash recovery, operational limits, authentication strategy, and a documented synchronization model.
 
-Update after the 2026-09-08 slice: safe single-message mailbox mutations and durable local draft preparation/cancellation are now implemented under the existing four-tool boundary. Provider-visible Drafts APPEND remains deliberately out of scope until durable append-outcome verification is implemented.
+Update after the 2026-09-08 slices: safe single-message mailbox mutations, durable local draft preparation/cancellation, strict structured search, and bounded selected-attachment downloads are implemented under the existing four-tool boundary. Provider-visible Drafts APPEND remains deliberately out of scope until durable append-outcome verification is implemented.
 
 The four-tool MCP boundary is still sufficient. Missing capabilities should be added as strict modes under the existing tools, not as one tool per feature or mailbox.
 
@@ -34,13 +34,13 @@ The four-tool MCP boundary is still sufficient. Missing capabilities should be a
 | Area | Standard IMAP/SMTP | Gmail/Zoho provider APIs | Current gateway |
 |---|---|---|---|
 | Mailbox listing, summaries, read, MIME attachments | Yes | Yes | Implemented and real-tested |
-| Search | IMAP SEARCH, provider syntax varies | Rich provider-specific syntax | Basic bounded text/subject/header search |
+| Search | IMAP SEARCH, provider syntax varies | Rich provider-specific syntax | Bounded query string plus strict structured filters compiled to server-side criteria; `hasAttachment` is explicit unsupported when not safely representable |
 | Threads | Header-based approximation | Native thread/resource IDs | Bounded header-based lookup |
 | Send/reply/forward | SMTP + MIME + headers | Native send/thread semantics | Durable SMTP/MIME flow implemented |
 | Draft lifecycle | IMAP Drafts/APPEND/flags, semantics vary | Native draft resources | Not implemented as drafts |
 | Read/unread and flags | IMAP STORE flags | Gmail labels; Zoho tags/flags | Read-only flags in summaries |
 | Move/archive/trash/restore | COPY/MOVE/STORE/EXPUNGE, extensions vary | Native operations | Not implemented |
-| Attachments download | MIME traversal | Dedicated attachment resources | Metadata query and bounded full read internally; no public download operation |
+| Attachments download | MIME traversal | Dedicated selected-attachment mode with account-bound reference, hash/size metadata, base64 bytes, and configured/public bounds |
 | OAuth2 | XOAUTH2 is an extension, not base IMAP/SMTP | First-class Gmail/Zoho OAuth | Password/App Password keychain only |
 | Incremental sync | UID/UIDVALIDITY; CONDSTORE/QRESYNC where supported | Gmail historyId/watch | No sync engine or push/watch |
 | Sent verification | Provider folder + exact Message-ID | Provider IDs/thread IDs | Exact Message-ID in configured Sent |
@@ -69,17 +69,17 @@ The four-tool MCP boundary is still sufficient. Missing capabilities should be a
 
 ### P1 — required for a complete mailbox connector
 
-5. **Mailbox mutations are absent.**
-   - Needed: mark read/unread, set/clear standard flags, archive/move/copy, move to Trash, restore from Trash, and optionally permanent delete behind a separate explicit policy. All mutations need account-scoped opaque references, provider confirmation, audit records, bounded batch size, and no permanent delete by default.
+5. **Mailbox mutations are intentionally non-destructive.**
+   - Mark read/unread, standard flags, copy/move, provider Trash, and restore are implemented with account-scoped opaque references, provider confirmation, audit records, and no EXPUNGE/permanent deletion. Batch mutation and provider-specific label semantics remain out of scope.
 
-6. **Draft lifecycle is absent.**
-   - `PREPARED` is an immutable local outbox record, not a provider-visible draft. A complete connector needs create/list/read/update/delete/send-draft semantics or an explicit decision that local drafts are the only supported draft model. The existing `CANCELLED` state has no public cancellation operation.
+6. **Provider-visible draft lifecycle is incomplete.**
+   - Local immutable draft intent and durable cancellation are implemented. Provider Drafts APPEND/list/read/update/delete/send-draft semantics remain out of scope until append outcome verification is durable and idempotent.
 
-7. **Search is too narrow for an agent-facing mail connector.**
-   - Current search combines text/subject/Subject-header criteria. Add a strict structured filter model for from/to/cc/subject/date range/has attachment/flags/message ID, with provider-neutral semantics and explicit provider-specific capability reporting. Never pass arbitrary IMAP search syntax from MCP.
+7. **Search is intentionally provider-neutral and bounded.**
+   - Structured from/to/cc/subject/date/read/flagged/Message-ID filters now compile to server-side criteria. `hasAttachment` remains an explicit unsupported result where IMAP cannot represent it safely; provider capability reporting and native provider syntax remain out of scope.
 
-8. **Attachment retrieval is not a complete public capability.**
-   - Metadata is public and full bytes are used internally for forwarding, but there is no bounded attachment download operation with a safe local artifact handle. Decide whether the gateway needs download-to-approved-path, content streaming through MCP, or metadata-only behavior. Support MIME inline/Content-ID relationships if HTML mail is in scope.
+8. **Attachment retrieval remains intentionally conservative.**
+   - Bounded selected-attachment download is implemented through `mail_query`; it returns base64 bytes plus safe metadata and rejects inline/content-ID or unsafe metadata. It does not expose raw MIME, arbitrary headers, or a filesystem artifact handle. Inline image rendering remains out of scope.
 
 9. **Authentication is password/App-Password only.**
    - Gmail currently prefers OAuth2; App Passwords require 2-Step Verification and may be unavailable under organization policy. Zoho supports application-specific passwords for IMAP/SMTP and OAuth2 for its REST API; REST OAuth must not be assumed to be IMAP XOAUTH2.
@@ -111,13 +111,12 @@ The four-tool MCP boundary is still sufficient. Missing capabilities should be a
 1. UIDVALIDITY-aware references and cursors.
 2. Crash recovery and stale lease reconciliation.
 3. Explicit timeout/concurrency/rate/retention configuration and enforcement.
-4. Safe non-destructive mailbox mutation modes.
-5. Draft lifecycle and cancellation semantics.
-6. Structured provider-neutral search filters.
-7. Capability projections and generic-provider certification.
-8. OAuth2 credential model.
-9. Optional continuous sync/watch subsystem.
-10. Provider-native Gmail/Zoho adapters only if native labels, history, or API drafts are required.
+4. Connection/command timeout, concurrency, rate, and backoff enforcement.
+5. Provider-visible draft lifecycle with durable APPEND outcome verification.
+6. Capability projections and generic-provider certification.
+7. OAuth2 credential model.
+8. Optional continuous sync/watch subsystem.
+9. Provider-native Gmail/Zoho adapters only if native labels, history, or API drafts are required.
 
 ## Release gate after this audit
 

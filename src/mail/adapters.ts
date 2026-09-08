@@ -11,10 +11,14 @@ export interface ImapAdapter {
   checkConnectivity?(): Promise<void>;
   list?(folder: string, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
   search?(folder: string, query: string, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
+  searchWithFilters?(folder: string, query: string | undefined, filters: MailSearchFilters, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
   read?(reference: string): Promise<MailMessage>;
+  downloadAttachment?(reference: string, attachmentIndex: number): Promise<DownloadedAttachment>;
   thread?(folder: string, anchorReference: string, limit?: number): Promise<readonly MailSummary[]>;
   mutate?(action: MailboxMutation): Promise<MailboxMutationResult>;
 }
+export interface MailSearchFilters { readonly from?: string | undefined; readonly to?: string | undefined; readonly cc?: string | undefined; readonly subject?: string | undefined; readonly since?: string | undefined; readonly before?: string | undefined; readonly hasAttachment?: boolean | undefined; readonly isRead?: boolean | undefined; readonly isFlagged?: boolean | undefined; readonly messageId?: string | undefined; }
+export interface DownloadedAttachment { readonly filename: string; readonly contentType: string; readonly size: number; readonly sha256: string; readonly content: Buffer; }
 export type MailboxMutationType = "markRead" | "markUnread" | "addFlag" | "removeFlag" | "move" | "copy" | "trash" | "restore";
 export interface MailboxMutation { readonly type: MailboxMutationType; readonly messageReference: string; readonly flag?: "\\Flagged" | "\\Answered"; readonly destinationFolder?: string; }
 export interface MailboxMutationResult { readonly action: MailboxMutationType; readonly reference: string; readonly folder: string; readonly uid: number; readonly flags: readonly string[]; }
@@ -107,7 +111,7 @@ export interface MailFolder { readonly path: string; readonly name: string; read
 export interface MailAddress { readonly name?: string | undefined; readonly address?: string | undefined; }
 export interface MailForwardMetadata { readonly originalMessageReference?: string | undefined; readonly originalMessageId?: string | undefined; readonly originalSubject?: string | undefined; }
 export interface MailSummary { readonly reference: string; readonly folder: string; readonly uid: number; /** Internal cursor/reference binding; removed at the MCP boundary. */ readonly uidValidity?: number; readonly subject?: string | undefined; readonly messageId?: string | undefined; readonly date?: string | undefined; readonly from: readonly MailAddress[]; readonly to: readonly MailAddress[]; readonly cc: readonly MailAddress[]; readonly replyTo?: readonly MailAddress[] | undefined; readonly inReplyTo?: string | undefined; readonly references?: readonly string[] | undefined; readonly forwarding?: MailForwardMetadata | undefined; readonly size?: number | undefined; readonly flags: readonly string[]; }
-export interface MailAttachment { readonly filename?: string; readonly contentType?: string; readonly size?: number; readonly content?: Buffer; }
+export interface MailAttachment { readonly filename?: string; readonly contentType?: string; readonly size?: number; readonly content?: Buffer; readonly disposition?: string; readonly contentId?: string; }
 export interface MailMessage extends MailSummary { readonly text?: string | undefined; readonly html?: string | undefined; readonly attachments: readonly MailAttachment[]; }
 export interface ImapFlowClient { connect(): Promise<void>; logout(): Promise<void>; close(): void; list(): Promise<ListResponse[]>; getMailboxLock(path: string): Promise<{ release(): void }>; search(query: SearchObject, options?: { uid?: boolean }): Promise<number[] | false | undefined>; fetch(range: string | number[], query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): AsyncGenerator<FetchMessageObject, false | void, undefined>; fetchOne(seq: string | number, query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): Promise<FetchMessageObject | false | undefined>; messageFlagsAdd?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageFlagsRemove?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageMove?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | unknown>; messageCopy?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | unknown>; }
 export type ImapFlowClientFactory = (options: ImapFlowOptions) => ImapFlowClient;
@@ -179,15 +183,49 @@ export class ImapFlowMailAdapter implements ImapAdapter {
 
   async checkConnectivity(): Promise<void> { await this.withClient(async () => undefined); }
 
-  async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]> {
+  async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number, filters?: MailSearchFilters): Promise<readonly MailSummary[]> {
     const bounded = Math.min(Math.max(limit, 1), this.maxResults);
-    return this.withClient(async (client) => { const lock = await client.getMailboxLock(folder); try { const uidValidity = this.validateUidValidity(client, expectedUidValidity); const base: SearchObject = query ? { or: [{ text: query }, { subject: query }, { header: { Subject: query } }] } : { all: true }; const search: SearchObject = afterUid === undefined ? base : { ...base, uid: `${afterUid + 1}:*` }; const found = await client.search(search, { uid: true }); const uids = (Array.isArray(found) ? found : []).slice(0, bounded); const result: MailSummary[] = []; for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) result.push(this.summary(folder, message, uidValidity)); return result.slice(0, bounded); } finally { lock.release(); } });
+    return this.withClient(async (client) => { const lock = await client.getMailboxLock(folder); try { const uidValidity = this.validateUidValidity(client, expectedUidValidity); const criteria: SearchObject[] = []; if (query) criteria.push({ or: [{ text: query }, { subject: query }, { header: { Subject: query } }] }); if (filters) criteria.push(...this.searchCriteria(filters)); const base: SearchObject = criteria.length === 0 ? { all: true } : Object.assign({}, ...criteria) as SearchObject; const search: SearchObject = afterUid === undefined ? base : { ...base, uid: `${afterUid + 1}:*` }; const found = await client.search(search, { uid: true }); const uids = (Array.isArray(found) ? found : []).slice(0, bounded); const result: MailSummary[] = []; for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) result.push(this.summary(folder, message, uidValidity)); return result.slice(0, bounded); } finally { lock.release(); } });
   }
 
   async list(folder: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, undefined, limit, afterUid, expectedUidValidity); }
   async search(folder: string, query: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, query, limit, afterUid, expectedUidValidity); }
+  async searchWithFilters(folder: string, query: string | undefined, filters: MailSearchFilters, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, query, limit, afterUid, expectedUidValidity, filters); }
 
-  async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const uidValidity = this.validateUidValidity(client, target.uidValidity); const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true }); if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); const parsed = await simpleParser(message.source); const summary = this.summary(target.folder, message, uidValidity); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item) => ({ ...(item.filename === undefined ? {} : { filename: item.filename }), ...(item.contentType === undefined ? {} : { contentType: item.contentType }), ...(item.size === undefined ? {} : { size: item.size }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
+  private searchCriteria(filters: MailSearchFilters): SearchObject[] {
+    if (filters.hasAttachment !== undefined) throw new SafeError("UNSUPPORTED_OPERATION", "The provider cannot safely represent hasAttachment without scanning message content.");
+    const criteria: SearchObject[] = [];
+    if (filters.from) criteria.push({ from: filters.from });
+    if (filters.to) criteria.push({ to: filters.to });
+    if (filters.cc) criteria.push({ cc: filters.cc });
+    if (filters.subject) criteria.push({ subject: filters.subject });
+    if (filters.since) criteria.push({ since: new Date(filters.since.includes("T") ? filters.since : `${filters.since}T00:00:00.000Z`) });
+    if (filters.before) criteria.push({ before: new Date(filters.before.includes("T") ? filters.before : `${filters.before}T00:00:00.000Z`) });
+    if (filters.isRead !== undefined) criteria.push({ seen: filters.isRead });
+    if (filters.isFlagged !== undefined) criteria.push({ flagged: filters.isFlagged });
+    if (filters.messageId) criteria.push({ header: { "Message-ID": filters.messageId } });
+    return criteria;
+  }
+
+  async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const uidValidity = this.validateUidValidity(client, target.uidValidity); const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true }); if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); const parsed = await simpleParser(message.source); const summary = this.summary(target.folder, message, uidValidity); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item) => ({ ...(item.filename === undefined ? {} : { filename: item.filename }), ...(item.contentType === undefined ? {} : { contentType: item.contentType }), ...(item.size === undefined ? {} : { size: item.size }), ...(item.contentDisposition === undefined ? {} : { disposition: item.contentDisposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
+
+  async downloadAttachment(reference: string, attachmentIndex: number): Promise<DownloadedAttachment> {
+    if (!Number.isSafeInteger(attachmentIndex) || attachmentIndex < 0 || attachmentIndex > 31) throw new SafeError("INVALID_INPUT", "Attachment index is out of range.");
+    const target = decodeReference(reference, this.options.account.accountId);
+    return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try {
+      this.validateUidValidity(client, target.uidValidity);
+      const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true });
+      if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found.");
+      const parsed = await simpleParser(message.source); const item = parsed.attachments[attachmentIndex];
+      if (!item) throw new SafeError("INVALID_INPUT", "Attachment index is out of range.");
+      const filename = item.filename; const contentType = item.contentType; const content = Buffer.from(item.content);
+      if (!filename || filename.length > 255 || /[\r\n\\/\u0000]/.test(filename) || !contentType || contentType.length > 128 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(contentType) || item.contentDisposition?.toLowerCase() === "inline" || item.contentId) throw new SafeError("UNSUPPORTED_OPERATION", "This attachment is inline or has unsafe metadata.");
+      if (item.size !== undefined && item.size !== content.length) throw new SafeError("ATTACHMENT_CHANGED", "The attachment changed while it was being read.");
+      if (content.length > Math.min(this.maxReadBytes, 5_000_000)) throw new SafeError("INVALID_INPUT", "The attachment exceeds the bounded download size.");
+      const { createHash } = await import("node:crypto");
+      return { filename, contentType, size: content.length, sha256: createHash("sha256").update(content).digest("hex"), content };
+    } finally { lock.release(); } });
+  }
 
   async mutate(action: MailboxMutation): Promise<MailboxMutationResult> {
     const target = decodeReference(action.messageReference, this.options.account.accountId);

@@ -198,6 +198,31 @@ test("IMAP list without a query remains an all-message search", async () => {
   assert.deepEqual(fake.searches, [{ all: true }]);
 });
 
+test("IMAP structured search compiles representable filters server-side and rejects attachment scans", async () => {
+  const fake = imapFake({ "7": { uid: 7, envelope: { subject: "Synthetic" } } }, [7]);
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.searchWithFilters!("INBOX-custom", "token", { from: "from@example.test", to: "to@example.test", cc: "cc@example.test", subject: "invoice", since: "2026-01-01", before: "2026-02-01", isRead: false, isFlagged: true, messageId: "<id@example.test>" }, 1, 7, 1);
+  assert.deepEqual(fake.searches[0], { or: [{ text: "token" }, { subject: "token" }, { header: { Subject: "token" } }], from: "from@example.test", to: "to@example.test", cc: "cc@example.test", subject: "invoice", since: new Date("2026-01-01T00:00:00.000Z"), before: new Date("2026-02-01T00:00:00.000Z"), seen: false, flagged: true, header: { "Message-ID": "<id@example.test>" }, uid: "8:*" });
+  await assert.rejects(adapter.searchWithFilters!("INBOX-custom", undefined, { hasAttachment: true }, 1), { code: "UNSUPPORTED_OPERATION" });
+  assert.equal(fake.locks.length, 2);
+});
+
+test("IMAP bounded attachment download returns bytes, hash, and safe metadata", async () => {
+  const source = Buffer.from("Content-Type: multipart/mixed; boundary=box\r\n\r\n--box\r\nContent-Type: text/plain\r\n\r\nbody\r\n--box\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=invoice.pdf\r\n\r\npdf-bytes\r\n--box--\r\n");
+  const fake = imapFake({ "7": { uid: 7, source, envelope: { subject: "With file" } } }, [7]);
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake, maxReadBytes: 256 });
+  const reference = (await adapter.list("INBOX-custom", 1))[0]!.reference;
+  const result = await adapter.downloadAttachment!(reference, 0);
+  assert.deepEqual({ filename: result.filename, contentType: result.contentType, size: result.size, sha256: result.sha256, content: result.content.toString("utf8") }, { filename: "invoice.pdf", contentType: "application/pdf", size: 9, sha256: createHash("sha256").update("pdf-bytes").digest("hex"), content: "pdf-bytes" });
+  await assert.rejects(adapter.downloadAttachment!(reference, 1), { code: "INVALID_INPUT" });
+  await assert.rejects(adapter.downloadAttachment!(reference, 32), { code: "INVALID_INPUT" });
+  fake.mailbox = { uidValidity: 2n };
+  await assert.rejects(adapter.downloadAttachment!(reference, 0), { code: "REFERENCE_STALE" });
+  fake.mailbox = { uidValidity: 1n };
+  const other = new ImapFlowMailAdapter({ account: { ...imapAccount, accountId: "other" }, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await assert.rejects(other.downloadAttachment!(reference, 0), { code: "REFERENCE_INVALID" });
+});
+
 test("IMAP pagination applies the cursor as a server-side UID criterion", async () => {
   const fake = imapFake({ "8": { uid: 8, envelope: { subject: "Synthetic" } } }, [8]);
   const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });

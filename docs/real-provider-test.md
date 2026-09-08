@@ -118,7 +118,7 @@ Optional routing fields may be added to a reviewed test: `cc`, `bcc`, `replyTo`,
    {"accountId":"<configured-account-id>","operation":"read","messageReference":"<returned-mailbox-reference>","limit":1}
    ```
 
-   Confirm the returned message metadata includes the expected exact Message-ID and attachment metadata. The bounded `attachments` query may also be used with the same account-scoped opaque message reference; it returns filename, content type, and size only, never attachment bytes.
+   Confirm the returned message metadata includes the expected exact Message-ID and attachment metadata. The bounded `attachments` query may also be used with the same account-scoped opaque message reference; without `attachmentIndex` it returns filename, content type, and size only. Explicit `attachmentIndex` download mode is bounded and returns only the selected safe attachment metadata, hash, and base64 bytes.
 
 ## 7. Stop and clean up
 

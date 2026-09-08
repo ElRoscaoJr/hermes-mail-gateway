@@ -14,8 +14,10 @@ class FakeMailboxAdapter implements ImapAdapter {
   constructor(private readonly label: string, private readonly verified = true, private readonly source?: Partial<MailMessage>) {}
   async list(folder: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`list:${folder}:${limit}`); return [message(folder, `${this.label}-list`, this.label)]; }
   async search(folder: string, query: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`search:${folder}:${query}:${limit}`); return [message(folder, `${this.label}-search`, query)]; }
+  async searchWithFilters(folder: string, query: string | undefined, filters: Record<string, unknown>, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`filtered:${folder}:${query ?? ""}:${Object.keys(filters).sort().join(",")}:${limit}`); return [message(folder, `${this.label}-filtered`, "filtered")]; }
   async listFolders(): Promise<readonly MailFolder[]> { this.calls.push("folders"); return [{ path: "Inbox", name: "Inbox", delimiter: "/" }, { path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All" }]; }
   async read(reference: string): Promise<MailMessage> { this.calls.push(`read:${reference}`); return { ...message("Inbox", reference, this.label), text: `safe body ${this.label}`, attachments: [], ...this.source }; }
+  async downloadAttachment(reference: string, attachmentIndex: number) { this.calls.push(`download:${reference}:${attachmentIndex}`); return { filename: "safe.txt", contentType: "text/plain", size: 4, sha256: "a".repeat(64), content: Buffer.from("safe") }; }
   async thread(folder: string, reference: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`thread:${folder}:${reference}:${limit}`); return [message(folder, `${this.label}-thread`, "thread subject")]; }
   async mutate(action: { type: "move" | "copy" | "markRead" | "markUnread" | "addFlag" | "removeFlag" | "trash" | "restore"; messageReference: string; destinationFolder?: string; flag?: "\\Flagged" | "\\Answered" }): Promise<{ action: typeof action.type; reference: string; folder: string; uid: number; flags: readonly string[] }> { this.calls.push(`mutate:${action.type}`); return { action: action.type, reference: action.messageReference, folder: action.destinationFolder ?? "Inbox", uid: 7, flags: [] }; }
   async verifySent(messageIdHeader: string): Promise<boolean> { this.calls.push(`verify:${messageIdHeader}`); return this.verified; }
@@ -137,6 +139,14 @@ test("mailQuery returns bounded attachment metadata and thread summaries", async
   assert.doesNotMatch(JSON.stringify(attachments), /secret bytes|"content"/i);
   const thread = await service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "ref-1", limit: 1 }, context);
   assert.deepEqual(thread, { messages: [{ folder: "Inbox", reference: "first-thread", uid: 7, subject: "thread subject", messageId: "<first-thread@example.test>", from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 }] });
+});
+test("mailQuery structured search and attachment download stay account-bound and public-safe", async () => {
+  const { service, first } = serviceFixture();
+  const filtered = await service.mailQuery({ accountId: "acct", operation: "search", search: { from: "from@example.test", isRead: true }, limit: 1 }, context) as { messages: MailSummary[] };
+  assert.equal(filtered.messages[0]?.subject, "filtered");
+  const downloaded = await service.mailQuery({ accountId: "acct", operation: "attachments", messageReference: "ref-1", attachmentIndex: 0, limit: 1 }, context) as { attachment: Record<string, unknown> };
+  assert.deepEqual(downloaded.attachment, { filename: "safe.txt", contentType: "text/plain", size: 4, sha256: "a".repeat(64), contentBase64: "c2FmZQ==" });
+  assert.deepEqual(first.calls.slice(-2), ["filtered:Inbox::from,isRead:2", "download:ref-1:0"]);
 });
 
 test("arbitrary provider folder failures are safely mapped without provider text", async () => {

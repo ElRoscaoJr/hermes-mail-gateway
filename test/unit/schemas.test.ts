@@ -8,6 +8,18 @@ test("mail query accepts exact Message-ID values for Sent verification", () => {
   assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "verifySent", messageReference: "<message@example.test>" }).success, true);
   assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "read", messageReference: "<message@example.test>" }).success, true);
 });
+test("structured search filters are strict, bounded, and search-only", () => {
+  const valid = { accountId: "a", operation: "search", search: { from: "from@example.test", to: "to@example.test", cc: "cc@example.test", subject: "invoice", since: "2026-01-01", before: "2026-02-01", hasAttachment: false, isRead: true, isFlagged: false, messageId: "<id@example.test>" } };
+  assert.equal(mailQuerySchema.safeParse(valid).success, true);
+  assert.equal(mailQuerySchema.safeParse({ ...valid, search: { ...valid.search, unknown: true } }).success, false);
+  assert.equal(mailQuerySchema.safeParse({ ...valid, operation: "list" }).success, false);
+  assert.equal(mailQuerySchema.safeParse({ ...valid, search: { since: "2026-02-01", before: "2026-01-01" } }).success, false);
+});
+test("attachment download mode is bounded and rejects misplaced indexes", () => {
+  assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "attachments", messageReference: "ref", attachmentIndex: 0 }).success, true);
+  assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "attachments", messageReference: "ref", attachmentIndex: 32 }).success, false);
+  assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "read", messageReference: "ref", attachmentIndex: 0 }).success, false);
+});
 test("configuration rejects the unsupported gateway append policy", () => {
   const valid = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX", sentFolder: "Sent" };
   assert.equal(accountConfigSchema.safeParse(valid).success, true);

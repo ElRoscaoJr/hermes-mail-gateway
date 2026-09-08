@@ -46,7 +46,7 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 - [x] ImapFlow 2.0.0 is constructed through an injectable client factory in tests; tests use no network, keychain, real mailbox, real credentials, or sends.
 - [x] Each operation resolves the configured credential reference, creates and closes one client, disables client logging, and maps connection/credential failures to `PROVIDER_UNAVAILABLE`.
 - [x] Folder listing, bounded summary search (text/subject/Subject-header OR criteria), bounded source reads, mailbox locks, UID-safe calls, and opaque folder+UID reference round trips are covered.
-- [x] Mail projections expose visible CC and bounded Reply-To/In-Reply-To/References plus selected Hermes forwarding metadata; Bcc, arbitrary headers, raw MIME, and attachment bytes remain outside public MCP output.
+- [x] Mail projections expose visible CC and bounded Reply-To/In-Reply-To/References plus selected Hermes forwarding metadata; Bcc, arbitrary headers, raw MIME, and attachment bytes remain outside normal public output, with bytes available only through explicit bounded download mode.
 - [x] Sent verification searches the configured `sentFolder` and confirms the exact Message-ID from the fetched envelope.
 - [x] Verification target for this slice: `npm run typecheck`, `npm test`, `npm run build`, and `npm audit`.
 
@@ -102,3 +102,12 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 - [x] Provider-returned arbitrary folders route through list/search; thread folder/reference mismatches and cross-account opaque references are rejected safely.
 - [x] MCP output redaction removes arbitrary provider fields and keeps exactly four tools.
 - [x] Full typecheck, tests, build, audit, and diff check pass after this slice; no provider was contacted and no mail was sent.
+
+## Slice 10 — Gmail/Zoho parity: structured search and bounded attachment download
+
+- [x] Strict search filters reject unknown fields, invalid date ranges, misplaced filters, and unsafe bounds.
+- [x] IMAP fake-adapter tests verify server-side from/to/cc/subject/date/read/flagged/Message-ID criteria, UID cursor composition, and explicit no-scan rejection for `hasAttachment`.
+- [x] Attachment download is an explicit `mail_query` mode, account/reference/UIDVALIDITY bound, limited to index 0–31, configured `maxReadBytes`, and a 5,000,000-byte public maximum.
+- [x] Fake-adapter tests verify selected bytes, size, SHA-256, base64 public output, out-of-range/cross-account/stale behavior, and MCP redaction excludes raw MIME and raw content fields.
+- [x] Exactly four MCP tools remain; delete semantics remain trash-only with no EXPUNGE or permanent deletion.
+- [x] Typecheck, full tests, build, audit, and diff check pass; no provider was contacted and no mail was sent.

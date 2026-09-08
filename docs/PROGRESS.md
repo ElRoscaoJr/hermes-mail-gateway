@@ -32,7 +32,7 @@
 
 ## Current position
 - Phase: 5 — Development and controlled-provider validation complete; production rollout remains intentionally disabled.
-- Current position: UIDVALIDITY-aware, audited single-message mailbox mutations and durable draft preparation/cancellation are implemented; provider Drafts APPEND remains intentionally deferred. The next P0 slice is connection/command timeout, concurrency, rate policy, and provider backoff enforcement. Never retry an ambiguous send automatically.
+- Current position: UIDVALIDITY-aware, audited single-message mailbox mutations and durable draft preparation/cancellation are implemented; structured provider-neutral search filters and bounded selected-attachment downloads are implemented under the existing four-tool boundary. Provider Drafts APPEND remains intentionally deferred. The next P0 slice is connection/command timeout, concurrency, rate policy, and provider backoff enforcement. Never retry an ambiguous send automatically.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-08 — Added four-tool `mail_execute` mailbox mutation modes with account-bound UIDVALIDITY references, selectable-folder validation, mailbox locks, provider confirmation, audit records, and no expunge/permanent delete. Added durable `mail_prepare` draft intent and `cancelPrepared`; provider Drafts APPEND remains the next draft slice and is not faked. Added optional `draftsFolder` configuration while preserving existing configs. Fake-provider, service, schema, and redaction-boundary coverage was extended; no mail was sent.
+Last updated: 2026-09-08 — Added strict provider-neutral `mail_query` search filters with server-side IMAP compilation and safe unsupported handling, plus bounded selected-attachment download with account/UIDVALIDITY binding, size/hash metadata, base64 output, and public redaction. Preserved exactly four MCP tools and trash-only delete semantics; no mail was sent.

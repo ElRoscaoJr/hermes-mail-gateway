@@ -154,9 +154,13 @@ export class MailGatewayService implements MailApplicationService {
       if (hasMore && page.length > 0 && page[page.length - 1]!.uidValidity === undefined) throw new SafeError("PROVIDER_UNAVAILABLE", "The mail provider returned no mailbox generation.");
       value = { messages: page.map(publicSummary), hasMore, ...(hasMore && page.length > 0 ? { nextCursor: encodeCursor({ accountId: account.accountId, folder, operation: "list", lastUid: page[page.length - 1]!.uid, uidValidity: page[page.length - 1]!.uidValidity! }) } : {}) };
     } else if (input.operation === "search") {
-      if (!input.query) throw new SafeError("INVALID_INPUT", "A search query is required.");
-      if (!imap.search) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support search.");
-      const messages = await safeProviderCall(() => imap.search!(folder, input.query!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity));
+      if (!input.query && input.search === undefined) throw new SafeError("INVALID_INPUT", "A search query or structured search filter is required.");
+      if (input.search !== undefined) {
+        if (!imap.searchWithFilters) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support structured search filters.");
+      } else if (!imap.search) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support search.");
+      const messages = input.search !== undefined
+        ? await safeProviderCall(() => imap.searchWithFilters!(folder, input.query, input.search!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity))
+        : await safeProviderCall(() => imap.search!(folder, input.query!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity));
       const hasMore = messages.length > limit;
       const page = messages.slice(0, limit);
       if (hasMore && page.length > 0 && page[page.length - 1]!.uidValidity === undefined) throw new SafeError("PROVIDER_UNAVAILABLE", "The mail provider returned no mailbox generation.");
@@ -167,9 +171,15 @@ export class MailGatewayService implements MailApplicationService {
       value = { message: await safeProviderCall(() => imap.read!(input.messageReference!)) as MailMessage };
     } else if (input.operation === "attachments") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
-      if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading.");
-      const message = await safeProviderCall(() => imap.read!(input.messageReference!));
-      value = { attachments: message.attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
+      if (input.attachmentIndex !== undefined) {
+        if (!imap.downloadAttachment) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support bounded attachment downloads.");
+        const attachment = await safeProviderCall(() => imap.downloadAttachment!(input.messageReference!, input.attachmentIndex!));
+        value = { attachment: { filename: attachment.filename, contentType: attachment.contentType, size: attachment.size, sha256: attachment.sha256, contentBase64: attachment.content.toString("base64") } };
+      } else {
+        if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading.");
+        const message = await safeProviderCall(() => imap.read!(input.messageReference!));
+        value = { attachments: message.attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
+      }
     } else if (input.operation === "thread") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
       if (!imap.thread) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support thread lookup.");

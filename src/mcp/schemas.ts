@@ -2,10 +2,28 @@ import { z } from "zod";
 const id = z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 const headerText = (max: number) => z.string().max(max).refine((value) => !/[\r\n]/.test(value), "Header values may not contain line breaks.");
 const messageIdHeader = z.string().regex(/^<[^<>\r\n]+>$/).max(998);
+const boundedDate = z.string().min(1).max(30).refine((value) => /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)?$/.test(value) && !Number.isNaN(Date.parse(value.includes("T") ? value : `${value}T00:00:00.000Z`)), "Date must be an ISO date or UTC timestamp.");
+export const mailSearchFiltersSchema = z.strictObject({
+  from: z.string().email().max(320).optional(),
+  to: z.string().email().max(320).optional(),
+  cc: z.string().email().max(320).optional(),
+  subject: z.string().max(998).refine((value) => !/[\r\n]/.test(value), "Subject may not contain line breaks.").optional(),
+  since: boundedDate.optional(),
+  before: boundedDate.optional(),
+  hasAttachment: z.boolean().optional(),
+  isRead: z.boolean().optional(),
+  isFlagged: z.boolean().optional(),
+  messageId: messageIdHeader.optional(),
+}).superRefine((value, context) => {
+  if (value.since && value.before && Date.parse(value.since.includes("T") ? value.since : `${value.since}T00:00:00.000Z`) >= Date.parse(value.before.includes("T") ? value.before : `${value.before}T00:00:00.000Z`)) context.addIssue({ code: "custom", path: ["before"], message: "before must be later than since." });
+});
 const recipientList = z.array(z.string().email()).max(100).default([]);
 const queryOperation = z.enum(["folders", "list", "search", "read", "thread", "attachments", "verifySent"]);
 export const mailAccountsSchema = z.strictObject({ includeHealth: z.boolean().default(true) });
-export const mailQuerySchema = z.strictObject({ accountId: id, operation: queryOperation, folder: z.string().min(1).max(200).optional(), query: z.string().max(1000).optional(), messageReference: z.union([id, messageIdHeader]).optional(), cursor: z.string().max(500).optional(), limit: z.number().int().min(1).max(100).default(20) });
+export const mailQuerySchema = z.strictObject({ accountId: id, operation: queryOperation, folder: z.string().min(1).max(200).optional(), query: z.string().max(1000).optional(), search: mailSearchFiltersSchema.optional(), messageReference: z.union([id, messageIdHeader]).optional(), attachmentIndex: z.number().int().min(0).max(31).optional(), cursor: z.string().max(500).optional(), limit: z.number().int().min(1).max(100).default(20) }).superRefine((value, context) => {
+  if (value.search !== undefined && value.operation !== "search") context.addIssue({ code: "custom", path: ["search"], message: "Structured search filters are valid only for search." });
+  if (value.attachmentIndex !== undefined && value.operation !== "attachments") context.addIssue({ code: "custom", path: ["attachmentIndex"], message: "attachmentIndex is valid only for attachment queries." });
+});
 export const mailPrepareSchema = z.strictObject({
   accountId: id,
   intent: z.enum(["send", "draft"]).default("send"),
