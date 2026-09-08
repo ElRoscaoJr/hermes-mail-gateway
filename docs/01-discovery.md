@@ -39,7 +39,7 @@ The outcome is a small local MCP service that lets Hermes query and mutate all t
 ### v1
 
 - Node.js/TypeScript service on Debian 13.
-- MCP over loopback HTTP, one systemd user service.
+- MCP over local stdio, one explicitly selected Hermes profile.
 - Four tools: `mail_accounts`, `mail_query`, `mail_prepare`, `mail_execute`.
 - Gmail and Zoho accounts configured outside the repository.
 - Generic IMAP/SMTP account configuration.

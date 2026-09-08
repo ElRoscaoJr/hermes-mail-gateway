@@ -138,8 +138,8 @@ There is no transition from `OUTCOME_UNKNOWN` to a blind resend. A future explic
 
 ### MCP transport and authorization
 
-- Transport: loopback HTTP MCP endpoint, reachable only by the Hermes `main` profile through local configuration.
-- Every request is authenticated and authorized before tool dispatch. The authorization design must validate a local bearer/token mechanism and bind it to the permitted `main` client; no network-wide exposure is allowed.
+- Transport: local stdio MCP process launched by the selected Hermes profile.
+- Every request is authenticated and authorized before tool dispatch. The selected local profile is the only permitted client; no network-wide exposure is allowed.
 - Tool schemas reject unknown fields and hostile paths/identifiers. Results are bounded and normalized.
 - HTTPS/TLS is required if the endpoint ever leaves loopback; v1 does not authorize remote exposure.
 

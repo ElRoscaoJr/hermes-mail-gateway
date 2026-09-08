@@ -3,7 +3,7 @@
 ## Stack (exact versions)
 
 - Runtime: Node.js 24.20.0 minimum for the first deployment target, TypeScript 7.0.2 in strict mode, and npm lockfile with exact dependency resolution.
-- Protocol: `@modelcontextprotocol/sdk` 1.30.0 for the four semantic tools over loopback HTTP.
+- Protocol: `@modelcontextprotocol/sdk` 1.30.0 for the four semantic tools over stdio.
 - Mail: `imapflow` 2.0.0, `nodemailer` 10.0.1, and `mailparser` 3.9.23; no protocol implementation from scratch.
 - Validation: `zod` 4.5.4 with strict object validation and unknown-field rejection.
 - Persistence: `better-sqlite3` 13.0.3 with WAL, prepared statements, and explicit migrations.
@@ -20,7 +20,7 @@ Why this stack: it keeps the protocol surface mature and small while placing rel
 | Host | Debian 13, service user, systemd user supervision. |
 | Runtime | Node.js 22 LTS minimum; exact patch pinned before scaffold. |
 | Accounts | Gmail, Zoho, and generic IMAP/SMTP. |
-| Transport | Local stdio MCP only; loopback HTTP is deferred until authenticated transport exists. |
+| Transport | Local stdio MCP only; network transport is deferred until authenticated transport exists. |
 | Result limits | Configured server-side maximums for query rows, read bytes, attachment bytes, and recipients. Query/read limits are implemented in this slice; concurrency, timeouts, rates, and backoff are the next P0 slice. |
 | Reliability budget | One execution claim per prepared message; zero blind retries; every attempt durably classified. |
 | Availability posture | Fail closed when SQLite, keychain, migrations, or authorization are unavailable. |
@@ -46,7 +46,7 @@ flowchart LR
 
 Components:
 
-1. **MCP transport and authorization** — authenticates every request, binds the caller to Hermes `main`, dispatches only the four tools, bounds request/response sizes, and emits invocation audit metadata.
+1. **MCP transport and authorization** — trusts the selected local stdio boundary, dispatches only the four tools, bounds request/response sizes, and emits invocation audit metadata.
 2. **Tool schemas** — strict input/output contracts, identifier/path allow-lists, and safe error mapping. Tools never access adapters directly.
 3. **Application services** — account listing, query orchestration, preparation, execution, verification, and permitted organization actions.
 4. **Outbox/state machine** — transactional persistence, idempotency mapping, execution lease, transition validation, restart recovery, and audit append.
@@ -79,7 +79,7 @@ The source tree implements this map; runtime composition is provided by `src/run
 | `src/index.ts` | Public library exports. |
 | `src/main.ts` | Process entrypoint, fail-closed startup, stdio transport, and database lifetime. |
 | `src/config/` | Strict configuration model; `src/runtime.ts` performs explicit file loading and composition. |
-| `src/auth/` | Loopback caller authentication and Hermes `main` authorization. |
+| `src/auth/` | Reserved for future authenticated network transport; local stdio is the v1 boundary. |
 | `src/mcp/` | Tool registration, schemas, safe result/error mapping, and request bounds. |
 | `src/application/` | Use cases for accounts, query, prepare, execute, verify, and organization. |
 | `src/domain/` | Account, message, idempotency, audit, and outbox state types/invariants. |
@@ -110,7 +110,7 @@ The source tree implements this map; runtime composition is provided by `src/run
 
 ## Security boundaries
 
-1. **Caller boundary:** the stdio process boundary is trusted for Hermes `main`; authenticated loopback HTTP is deferred and must be designed before any remote transport.
+1. **Caller boundary:** the selected local stdio process is the v1 trust boundary; authenticated network transport is deferred and must be designed before any remote exposure.
 2. **Tool boundary:** strict schemas, no unknown fields, bounded results, safe error mapping, and rate/concurrency limits.
 3. **Account boundary:** `accountId` maps only to operator-configured account records. A caller cannot supply an endpoint or credential reference.
 4. **Filesystem boundary:** attachment paths are canonicalized and confined to configured roots; hashes are checked at prepare and execute.
@@ -124,7 +124,7 @@ The source tree implements this map; runtime composition is provided by `src/run
 - Install a pinned package/build under a dedicated service account on Debian 13.
 - Create service-owned directories for database, runtime configuration references, logs, and temporary MIME/attachment work; set restrictive permissions and do not place credentials in them.
 - Run one systemd user service with restart supervision for process crashes, but do not configure a mail-send retry loop. Process restart must recover durable state, not resubmit unknown messages.
-- Bind MCP HTTP to loopback and configure Hermes `main` with the local authorization material through operator setup. Do not expose a public port or reverse proxy in v1.
+- Launch the MCP server through the selected Hermes profile. Do not expose a public port or reverse proxy in v1.
 - At startup, validate runtime version, migrations, database integrity, secret-store availability, configuration schema, and account policy. Fail closed with a safe diagnostic when any prerequisite is invalid.
 - Rotate credentials through the host keychain/Secret Service and operator procedure. The gateway must not print or persist the replacement value.
 - Back up SQLite according to an operator-defined local policy while preserving restrictive permissions. Restore procedures must account for possible provider-side sends and must never blindly replay outbox rows.

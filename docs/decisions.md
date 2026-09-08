@@ -32,9 +32,9 @@
 
 ## D-005 — Runtime deployment
 - Date / phase: 2026-09-07 / Phase 1
-- Decision: Run one pinned local service under systemd user supervision and connect Hermes to it over loopback MCP HTTP. Do not use `npx @latest` in production.
+- Decision: Run one pinned local stdio MCP process under the selected Hermes profile. Do not use `npx @latest` in production.
 - Why: One SQLite authority prevents races between Hermes profiles and gives reproducible upgrades.
-- Alternatives rejected: Separate stdio process per gateway; dynamic npm execution.
+- Alternatives rejected: Unauthenticated network transport; dynamic npm execution.
 - Supersedes: none
 
 ## D-006 — Test safety
