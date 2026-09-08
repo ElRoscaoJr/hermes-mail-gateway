@@ -21,4 +21,4 @@
 | Credential reference parser/store | `src/mail/credentials.ts` | Validates explicit `keychain:<service>/<account>` references and resolves credentials without MCP exposure. |
 | MIME builder | `src/mail/mime.ts` | Nodemailer 10.0.1 stream MIME generation for text, optional HTML, and hash/size-validated attachments. |
 | Nodemailer SMTP adapter | `src/mail/adapters.ts` | Injected-transport submission of persisted raw MIME with an explicit typed `{ from, to, cc, bcc }` envelope; rejected, pre-submission, acknowledged, and unknown outcomes; no internal retry. |
-| `UNSUPPORTED_OPERATION` | `src/errors.ts` | Safe error for explicitly unsupported mailbox operations such as threads and attachments. |
+| `UNSUPPORTED_OPERATION` | `src/errors.ts` | Safe error for capabilities not implemented by a configured adapter or explicitly unsupported operations such as forwarding from unavailable attachment bytes. |
