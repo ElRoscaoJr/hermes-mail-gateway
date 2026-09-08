@@ -3,6 +3,7 @@
 | Surface | Location | Purpose |
 |---|---|---|
 | Four MCP input schemas | `src/mcp/schemas.ts` | Strict schemas for `mail_accounts`, `mail_query`, `mail_prepare`, and `mail_execute`. |
+| Provider draft save seam | `src/mail/adapters.ts` | Account-bound IMAP APPEND with `\\Draft`, exact Message-ID verification, UID/UIDVALIDITY capture, and ambiguity handling. |
 | `MailApplicationService` | `src/application/service.ts` | Provider-free four-operation application seam and per-call context. |
 | `MailGatewayService` | `src/application/service.ts` | Account-scoped application wiring for safe projections, bounded cursor mailbox queries, strict structured search, bounded attachment download, durable preparation, verification-only execution, and SMTP execution. |
 | `createMcpServer(service)` | `src/mcp/server.ts` | Exactly four strict, redacting MCP tools with safe error mapping. |

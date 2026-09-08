@@ -191,6 +191,25 @@ test("IMAP folder discovery excludes non-selectable namespaces", async () => {
   const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
   assert.deepEqual(await adapter.listFolders(), [{ path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "\\Junk" }]);
 });
+
+test("IMAP draft APPEND sets the Draft flag, verifies Message-ID, and returns an opaque UID reference", async () => {
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: "<draft@example.test>" } } }, [7]);
+  fake.flags.add("\\Draft");
+  fake.append = async (path, content, flags) => { assert.equal(path, "Brouillons"); assert.equal(Buffer.from(content).toString(), "raw draft"); assert.deepEqual(flags, ["\\Draft"]); return { destination: "Brouillons", uid: 7, uidValidity: 1n }; };
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  const result = await adapter.appendDraft!(Buffer.from("raw draft"), "Brouillons", { accountId: "acct", messageIdHeader: "<draft@example.test>" });
+  assert.deepEqual({ folder: result.folder, uid: result.uid, uidValidity: result.uidValidity }, { folder: "Brouillons", uid: 7, uidValidity: 1 });
+  assert.deepEqual(fake.locks, ["Brouillons"]);
+});
+
+test("IMAP draft APPEND treats a missing or ambiguous UID as unsupported and never claims saved", async () => {
+  const ambiguous = imapFake({ "7": { uid: 7, envelope: { messageId: "<draft@example.test>" } }, "8": { uid: 8, envelope: { messageId: "<draft@example.test>" } } }, [7, 8]);
+  ambiguous.flags.add("\\Draft");
+  ambiguous.append = async () => ({ destination: "Drafts" });
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => ambiguous });
+  await assert.rejects(adapter.appendDraft!(Buffer.from("raw"), "Drafts", { accountId: "acct", messageIdHeader: "<draft@example.test>" }), { code: "PROVIDER_UNAVAILABLE" });
+  assert.deepEqual(ambiguous.searches, [{ header: { "Message-ID": "<draft@example.test>" } }]);
+});
 test("IMAP list without a query remains an all-message search", async () => {
   const fake = imapFake({ "7": { uid: 7, envelope: { subject: "Synthetic" } } }, [7]);
   const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });

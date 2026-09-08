@@ -8,7 +8,7 @@ export { prepareMessage, messageIdHeader } from "./mail/prepare.js";
 export { buildMime } from "./mail/mime.js";
 export { KeychainCredentialStore, parseCredentialReference } from "./mail/credentials.js";
 export { NodemailerSmtpAdapter, ImapFlowMailAdapter, parseSmtpEndpoint } from "./mail/adapters.js";
-export type { ImapAdapter, SmtpAdapter, SmtpEnvelope, SmtpOutcome, SmtpSubmissionResult, NodemailerSmtpOptions, MailFolder, MailAddress, MailForwardMetadata, MailSummary, MailMessage, MailAttachment, MailSearchFilters, DownloadedAttachment, MailboxMutation, MailboxMutationType, MailboxMutationResult, ImapFlowClient, ImapFlowClientFactory, ImapFlowMailAdapterOptions } from "./mail/adapters.js";
+export type { ImapAdapter, SmtpAdapter, SmtpEnvelope, SmtpOutcome, SmtpSubmissionResult, NodemailerSmtpOptions, MailFolder, MailAddress, MailForwardMetadata, MailSummary, MailMessage, MailAttachment, MailSearchFilters, DownloadedAttachment, MailboxMutation, MailboxMutationType, MailboxMutationResult, DraftAppendContext, DraftAppendResult, ImapFlowClient, ImapFlowClientFactory, ImapFlowMailAdapterOptions } from "./mail/adapters.js";
 export type { MailApplicationService, ApplicationCallContext, MailAccountsInput, MailQueryInput, MailPrepareInput, MailExecuteInput } from "./application/service.js";
 export { MailGatewayService } from "./application/service.js";
 export type { MailAdapterRegistry, SafeAccountProjection, AccountHealth } from "./application/service.js";

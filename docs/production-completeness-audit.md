@@ -1,7 +1,7 @@
 # Production Completeness Audit
 
 Date: 2026-09-08
-Scope: Hermes Mail Gateway working tree after the structured-search and bounded-attachment-download parity slice; no commit was created and no provider was contacted.
+Scope: Hermes Mail Gateway working tree after provider-visible draft APPEND; no commit was created and no provider was contacted.
 
 ## Executive conclusion
 
@@ -9,7 +9,7 @@ The project has a strong provider-independent send core: durable raw MIME, idemp
 
 It is **not yet a complete production mail connector**. It is currently best described as a reliable multi-account send-and-query gateway. A production connector also needs safe mailbox mutations, drafts, stable mailbox identity across UIDVALIDITY changes, crash recovery, operational limits, authentication strategy, and a documented synchronization model.
 
-Update after the 2026-09-08 slices: safe single-message mailbox mutations, durable local draft preparation/cancellation, strict structured search, and bounded selected-attachment downloads are implemented under the existing four-tool boundary. Provider-visible Drafts APPEND remains deliberately out of scope until durable append-outcome verification is implemented.
+Update after the 2026-09-08 slice: safe single-message mailbox mutations, durable provider-visible draft preparation/save/cancellation, strict structured search, and bounded selected-attachment downloads are implemented under the existing four-tool boundary. Draft APPEND uses durable pre-append state, exact Message-ID plus `\\Draft` verification, UID/UIDVALIDITY capture, and non-retryable verification-required state for ambiguous outcomes.
 
 The four-tool MCP boundary is still sufficient. Missing capabilities should be added as strict modes under the existing tools, not as one tool per feature or mailbox.
 
@@ -37,9 +37,9 @@ The four-tool MCP boundary is still sufficient. Missing capabilities should be a
 | Search | IMAP SEARCH, provider syntax varies | Rich provider-specific syntax | Bounded query string plus strict structured filters compiled to server-side criteria; `hasAttachment` is explicit unsupported when not safely representable |
 | Threads | Header-based approximation | Native thread/resource IDs | Bounded header-based lookup |
 | Send/reply/forward | SMTP + MIME + headers | Native send/thread semantics | Durable SMTP/MIME flow implemented |
-| Draft lifecycle | IMAP Drafts/APPEND/flags, semantics vary | Native draft resources | Not implemented as drafts |
+| Draft lifecycle | IMAP Drafts/APPEND/flags, semantics vary | Native draft resources | Durable IMAP Drafts APPEND with exact verification and no-blind-retry state |
 | Read/unread and flags | IMAP STORE flags | Gmail labels; Zoho tags/flags | Read-only flags in summaries |
-| Move/archive/trash/restore | COPY/MOVE/STORE/EXPUNGE, extensions vary | Native operations | Not implemented |
+| Move/archive/trash/restore | COPY/MOVE/STORE/EXPUNGE, extensions vary | Native operations | Bounded single-message copy/move/trash/restore; no expunge |
 | Attachments download | MIME traversal | Dedicated selected-attachment mode with account-bound reference, hash/size metadata, base64 bytes, and configured/public bounds |
 | OAuth2 | XOAUTH2 is an extension, not base IMAP/SMTP | First-class Gmail/Zoho OAuth | Password/App Password keychain only |
 | Incremental sync | UID/UIDVALIDITY; CONDSTORE/QRESYNC where supported | Gmail historyId/watch | No sync engine or push/watch |
@@ -72,8 +72,8 @@ The four-tool MCP boundary is still sufficient. Missing capabilities should be a
 5. **Mailbox mutations are intentionally non-destructive.**
    - Mark read/unread, standard flags, copy/move, provider Trash, and restore are implemented with account-scoped opaque references, provider confirmation, audit records, and no EXPUNGE/permanent deletion. Batch mutation and provider-specific label semantics remain out of scope.
 
-6. **Provider-visible draft lifecycle is incomplete.**
-   - Local immutable draft intent and durable cancellation are implemented. Provider Drafts APPEND/list/read/update/delete/send-draft semantics remain out of scope until append outcome verification is durable and idempotent.
+6. **Provider-visible draft lifecycle is intentionally bounded.**
+   - Durable immutable draft intent, provider Drafts APPEND, exact Message-ID/`\\Draft` verification, UID/UIDVALIDITY references, idempotent repeat, and cancellation before APPEND are implemented. Draft editing, provider-side deletion, and send-draft semantics remain out of scope; normal SMTP execution cannot send `intent:"draft"`.
 
 7. **Search is intentionally provider-neutral and bounded.**
    - Structured from/to/cc/subject/date/read/flagged/Message-ID filters now compile to server-side criteria. `hasAttachment` remains an explicit unsupported result where IMAP cannot represent it safely; provider capability reporting and native provider syntax remain out of scope.
@@ -112,8 +112,7 @@ The four-tool MCP boundary is still sufficient. Missing capabilities should be a
 2. Crash recovery and stale lease reconciliation.
 3. Explicit timeout/concurrency/rate/retention configuration and enforcement.
 4. Connection/command timeout, concurrency, rate, and backoff enforcement.
-5. Provider-visible draft lifecycle with durable APPEND outcome verification.
-6. Capability projections and generic-provider certification.
+5. Capability projections and generic-provider certification.
 7. OAuth2 credential model.
 8. Optional continuous sync/watch subsystem.
 9. Provider-native Gmail/Zoho adapters only if native labels, history, or API drafts are required.

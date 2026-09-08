@@ -148,7 +148,7 @@ Test points:
 - All allowed and forbidden outbox transitions, concurrent execution claims, restart recovery, and migration failures.
 - MIME determinism, preassigned Message-ID, reply headers, attachment hashes, size limits, and provider Sent policy.
 - SMTP outcome classification for definitive reject, pre-submit failure, post-submit ambiguity, and acknowledged submission.
-- Exact Message-ID verification, provider-managed Sent copies, and blocked ambiguous recovery; gateway-side IMAP APPEND is not implemented.
+- Exact Message-ID verification, provider-managed Sent copies, blocked ambiguous recovery, and a separate durable provider Drafts APPEND path with `\\Draft` verification; the gateway never appends to Sent.
 - Credential absence, database lock/corruption, provider timeout, malformed mailbox data, and safe error mapping.
 - Self-only real-provider tests, if configured, limited to the operator-controlled recipient outside the repository.
 

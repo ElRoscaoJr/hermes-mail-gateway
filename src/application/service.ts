@@ -249,9 +249,29 @@ export class MailGatewayService implements MailApplicationService {
       if (input.action.type === "cancelPrepared") {
         const message = this.outbox.get(input.action.messageId);
         if (message.accountId !== account.accountId) throw new SafeError("ACCOUNT_NOT_FOUND", "Message was not found for this account.");
+        if (message.intent === "draft" && message.draftSaveStatus !== "NOT_SAVED") throw new SafeError("STATE_CONFLICT", "A provider-saved or verification-required draft cannot be cancelled locally.");
         const cancelled = this.outbox.transition(message.messageId, "CANCELLED", "prepared message cancelled before provider submission");
         this.outbox.appendAudit({ correlationId: context.correlationId, caller: context.caller, tool: "mail_execute", accountId: account.accountId, messageId: message.messageId, oldState: message.state, newState: cancelled.state, outcomeCode: "CANCELLED", metadata: { action: input.action.type } });
         return { messageId: cancelled.messageId, accountId: cancelled.accountId, intent: cancelled.intent, state: cancelled.state, action: input.action.type };
+      }
+      if (input.action.type === "saveDraft") {
+        const message = this.outbox.get(input.action.messageId);
+        if (message.accountId !== account.accountId) throw new SafeError("ACCOUNT_NOT_FOUND", "Message was not found for this account.");
+        if (message.intent !== "draft") throw new SafeError("STATE_CONFLICT", "saveDraft applies only to a prepared draft intent.");
+        if (message.draftSaveStatus === "SAVED") return { messageId: message.messageId, accountId: message.accountId, messageIdHeader: message.messageIdHeader, state: message.state, draftSaveStatus: message.draftSaveStatus, draftReference: message.draftProviderReference, folder: message.draftFolder, uid: message.draftUid, uidValidity: message.draftUidValidity };
+        if (!imap.appendDraft) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support provider draft APPEND.");
+        const folder = account.draftsFolder ?? await this.specialFolder(imap, "\\Drafts");
+        await this.requireSelectableFolder(imap, folder);
+        const started = this.outbox.beginDraftSave(message.messageId);
+        try {
+          const result = await safeProviderCall(() => imap.appendDraft!(this.outbox.getRawMime(started.messageId), folder, { accountId: account.accountId, messageIdHeader: started.messageIdHeader }));
+          const saved = this.outbox.confirmDraftSaved(started.messageId, result);
+          this.outbox.appendAudit({ correlationId: context.correlationId, caller: context.caller, tool: "mail_execute", accountId: account.accountId, messageId: saved.messageId, oldState: started.state, newState: saved.state, outcomeCode: "DRAFT_SAVED", metadata: { action: input.action.type, folder: result.folder, uid: result.uid } });
+          return { messageId: saved.messageId, accountId: saved.accountId, messageIdHeader: saved.messageIdHeader, state: saved.state, draftSaveStatus: saved.draftSaveStatus, draftReference: saved.draftProviderReference, folder: saved.draftFolder, uid: saved.draftUid, uidValidity: saved.draftUidValidity };
+        } catch {
+          this.outbox.appendAudit({ correlationId: context.correlationId, caller: context.caller, tool: "mail_execute", accountId: account.accountId, messageId: started.messageId, oldState: started.state, newState: started.state, outcomeCode: "DRAFT_SAVE_VERIFICATION_REQUIRED", metadata: { action: input.action.type, folder } });
+          throw new SafeError("DRAFT_SAVE_VERIFICATION_REQUIRED", "The draft append outcome is ambiguous; verify provider state before any further action.");
+        }
       }
       if (!imap.mutate) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support mailbox mutations.");
       let destinationFolder: string | undefined;

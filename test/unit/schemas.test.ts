@@ -45,6 +45,7 @@ test("mail execute exposes a strict mutation union and draft cancellation", () =
   assert.equal(mailExecuteSchema.safeParse({ accountId: "acct", action: { type: "trash", messageReference: "opaque-reference", extra: true } }).success, false);
   assert.equal(mailExecuteSchema.safeParse({ accountId: "acct", action: { type: "saveDraft", messageReference: "opaque-reference" } }).success, false);
   assert.equal(mailExecuteSchema.safeParse({ accountId: "acct", action: { type: "cancelPrepared", messageId: "prepared-1" } }).success, true);
+  assert.equal(mailExecuteSchema.safeParse({ accountId: "acct", action: { type: "saveDraft", messageId: "prepared-1" } }).success, true);
 });
 test("mail prepare accepts an explicit draft intent while preserving the default", () => {
   const base = { accountId: "acct", idempotencyKey: "idem-123456", recipients: ["recipient@example.test"], subject: "x" };

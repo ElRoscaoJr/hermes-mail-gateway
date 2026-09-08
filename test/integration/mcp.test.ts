@@ -14,6 +14,7 @@ test("MCP exposes exactly four tools and rejects invalid public input", async ()
     mailPrepare: (input) => { calls.push(`prepare:${input.accountId}`); return { state: "PREPARED", accountId: input.accountId, bcc: ["hidden@example.test"], attachments: [{ filename: "secret.bin", content: Buffer.from("attachment bytes") }], rawMime: Buffer.from("From: secret@example.test\r\n\r\nbody") }; },
     mailExecute: (input) => {
       if (input.accountId !== "acct") throw new SafeError("ACCOUNT_NOT_FOUND", "Account was not found.");
+      if (input.action?.type === "saveDraft") return { messageId: input.action.messageId, messageIdHeader: "<draft@example.test>", draftReference: "opaque-draft", folder: "Brouillons", uid: 7, uidValidity: 2, state: "PREPARED", draftSaveStatus: "SAVED", bcc: ["hidden@example.test"], rawMime: Buffer.from("From: secret@example.test\r\n\r\nbody") };
       return { state: input.verifyOnly ? "VERIFIED_ONLY" : "SENT_VERIFIED", accountId: input.accountId };
     }
   };
@@ -52,6 +53,10 @@ test("MCP exposes exactly four tools and rejects invalid public input", async ()
 
   const execute = await client.callTool({ name: "mail_execute", arguments: { accountId: "acct", messageId: "message", verifyOnly: true } });
   assert.equal(execute.isError, undefined);
+  const savedDraft = await client.callTool({ name: "mail_execute", arguments: { accountId: "acct", action: { type: "saveDraft", messageId: "message" } } });
+  assert.equal(savedDraft.isError, undefined);
+  assert.match(JSON.stringify(savedDraft.structuredContent), /opaque-draft|Brouillons|SAVED/);
+  assert.doesNotMatch(JSON.stringify(savedDraft.structuredContent), /rawMime|secret@example\.test|hidden@example\.test|\"bcc\"|body/i);
   const mismatch = await client.callTool({ name: "mail_execute", arguments: { accountId: "other", messageId: "message" } });
   assert.equal(mismatch.isError, true);
   assert.doesNotMatch(JSON.stringify(mismatch), /stack|private|attacker/i);

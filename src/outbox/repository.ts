@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { SafeError } from "../errors.js";
-import type { OutboxState, PreparedMessage } from "../domain/types.js";
+import type { DraftSaveStatus, OutboxState, PreparedMessage } from "../domain/types.js";
 import { redact } from "../observability/redaction.js";
 const transitions: Record<OutboxState, readonly OutboxState[]> = {
   PREPARED: ["SEND_ATTEMPTED", "FAILED_PERMANENT", "CANCELLED"], SEND_ATTEMPTED: ["SENT_UNVERIFIED", "SENT_VERIFIED", "FAILED_PERMANENT", "OUTCOME_UNKNOWN"],
@@ -39,6 +39,22 @@ export class OutboxRepository {
     if (current.state === "SENT_VERIFIED") return current;
     throw new SafeError("STATE_CONFLICT", `Confirmation from ${current.state} is not permitted.`);
   }
+  beginDraftSave(messageId: string): PreparedMessage {
+    const current = this.get(messageId);
+    if (current.intent !== "draft") throw new SafeError("STATE_CONFLICT", "Only prepared draft messages can be saved as drafts.");
+    if (current.state !== "PREPARED") throw new SafeError("STATE_CONFLICT", "Only a durable PREPARED draft can be saved.");
+    if (current.draftSaveStatus === "SAVED") return current;
+    if (current.draftSaveStatus === "APPEND_STARTED") throw new SafeError("DRAFT_SAVE_VERIFICATION_REQUIRED", "Draft provider state requires verification; the draft will not be appended again.");
+    this.db.prepare("UPDATE outbox_messages SET draft_save_status = 'APPEND_STARTED', updated_at = ? WHERE message_id = ? AND intent = 'draft' AND state = 'PREPARED' AND draft_save_status = 'NOT_SAVED'").run(now(), messageId);
+    return this.get(messageId);
+  }
+  confirmDraftSaved(messageId: string, result: { reference: string; folder: string; uid: number; uidValidity: number }): PreparedMessage {
+    const current = this.get(messageId);
+    if (current.draftSaveStatus === "SAVED") return current;
+    if (current.intent !== "draft" || current.state !== "PREPARED" || current.draftSaveStatus !== "APPEND_STARTED") throw new SafeError("STATE_CONFLICT", "Draft save confirmation is not permitted for this message.");
+    this.db.prepare("UPDATE outbox_messages SET draft_save_status = 'SAVED', draft_provider_reference = ?, draft_folder = ?, draft_uid = ?, draft_uid_validity = ?, provider_evidence = ?, updated_at = ? WHERE message_id = ? AND draft_save_status = 'APPEND_STARTED'").run(result.reference, result.folder, result.uid, result.uidValidity, "exact Message-ID and \\Draft flag confirmed", now(), messageId);
+    return this.get(messageId);
+  }
   claim(messageId: string, owner: string, leaseMs: number, at = now()): PreparedMessage {
     const until = new Date(Date.parse(at) + leaseMs).toISOString();
     const result = this.db.prepare("UPDATE outbox_messages SET state = 'SEND_ATTEMPTED', attempt_owner = ?, lease_until = ?, updated_at = ? WHERE message_id = ? AND state = 'PREPARED' AND (lease_until IS NULL OR lease_until < ?)").run(owner, until, at, messageId, at);
@@ -62,5 +78,5 @@ export class OutboxRepository {
     return reconcile();
   }
   appendAudit(event: { correlationId: string; caller: string; tool: string; accountId?: string; messageId?: string; oldState?: string; newState?: string; outcomeCode: string; metadata: unknown }): void { this.db.prepare("INSERT INTO audit_events(event_id, correlation_id, caller, tool, account_id, message_id, old_state, new_state, outcome_code, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(randomUUID(), event.correlationId, event.caller, event.tool, event.accountId ?? null, event.messageId ?? null, event.oldState ?? null, event.newState ?? null, event.outcomeCode, JSON.stringify(redact(event.metadata)), now()); }
-  private map(row: Record<string, unknown>): PreparedMessage { return { messageId: row.message_id as string, accountId: row.account_id as string, idempotencyKey: row.idempotency_key as string, messageIdHeader: row.message_id_header as string, intent: (row.intent as "send" | "draft") ?? "send", fromAddress: row.from_address as string, recipients: JSON.parse(row.recipients as string) as string[], cc: JSON.parse((row.cc as string | null) ?? "[]") as string[], bcc: JSON.parse((row.bcc as string | null) ?? "[]") as string[], ...(row.reply_to === null || row.reply_to === undefined ? {} : { replyTo: row.reply_to as string }), ...(row.in_reply_to === null || row.in_reply_to === undefined ? {} : { inReplyTo: row.in_reply_to as string }), references: JSON.parse((row.references_header as string | null) ?? "[]") as string[], ...(typeof row.forwarding_metadata === "string" ? { forwarding: JSON.parse(row.forwarding_metadata) as NonNullable<PreparedMessage["forwarding"]> } : {}), subject: row.subject as string, ...(row.text_body === null ? {} : { textBody: row.text_body as string }), ...(row.html_body === null ? {} : { htmlBody: row.html_body as string }), attachments: JSON.parse(row.attachment_manifest as string) as never[], state: row.state as OutboxState }; }
+  private map(row: Record<string, unknown>): PreparedMessage { return { messageId: row.message_id as string, accountId: row.account_id as string, idempotencyKey: row.idempotency_key as string, messageIdHeader: row.message_id_header as string, intent: (row.intent as "send" | "draft") ?? "send", draftSaveStatus: (row.draft_save_status as DraftSaveStatus) ?? "NOT_SAVED", ...(typeof row.draft_provider_reference === "string" ? { draftProviderReference: row.draft_provider_reference } : {}), ...(typeof row.draft_folder === "string" ? { draftFolder: row.draft_folder } : {}), ...(typeof row.draft_uid === "number" ? { draftUid: row.draft_uid } : {}), ...(typeof row.draft_uid_validity === "number" ? { draftUidValidity: row.draft_uid_validity } : {}), fromAddress: row.from_address as string, recipients: JSON.parse(row.recipients as string) as string[], cc: JSON.parse((row.cc as string | null) ?? "[]") as string[], bcc: JSON.parse((row.bcc as string | null) ?? "[]") as string[], ...(row.reply_to === null || row.reply_to === undefined ? {} : { replyTo: row.reply_to as string }), ...(row.in_reply_to === null || row.in_reply_to === undefined ? {} : { inReplyTo: row.in_reply_to as string }), references: JSON.parse((row.references_header as string | null) ?? "[]") as string[], ...(typeof row.forwarding_metadata === "string" ? { forwarding: JSON.parse(row.forwarding_metadata) as NonNullable<PreparedMessage["forwarding"]> } : {}), subject: row.subject as string, ...(row.text_body === null ? {} : { textBody: row.text_body as string }), ...(row.html_body === null ? {} : { htmlBody: row.html_body as string }), attachments: JSON.parse(row.attachment_manifest as string) as never[], state: row.state as OutboxState }; }
 }

@@ -55,6 +55,6 @@ const mutationAction = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("trash"), messageReference: mailboxReference }),
   z.strictObject({ type: z.literal("restore"), messageReference: mailboxReference }),
 ]);
-const preparedAction = z.union([mutationAction, z.strictObject({ type: z.literal("cancelPrepared"), messageId: id })]);
+const preparedAction = z.union([mutationAction, z.strictObject({ type: z.literal("cancelPrepared"), messageId: id }), z.strictObject({ type: z.literal("saveDraft"), messageId: id })]);
 export const mailExecuteSchema = z.strictObject({ accountId: id, messageId: id.optional(), verifyOnly: z.boolean().default(false), action: preparedAction.optional() }).refine((value) => value.action !== undefined || value.messageId !== undefined, "An execution messageId or action is required.");
 export const toolSchemas = { mail_accounts: mailAccountsSchema, mail_query: mailQuerySchema, mail_prepare: mailPrepareSchema, mail_execute: mailExecuteSchema } as const;

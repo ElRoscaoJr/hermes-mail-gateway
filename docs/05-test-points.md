@@ -1,11 +1,11 @@
 # Development test points
 
-## Slice 7 — mailbox mutations and draft cancellation
+## Slice 7 — mailbox mutations and draft lifecycle
 
 - Strict `mail_execute` mutation actions are account-scoped and limited to one UIDVALIDITY-bound reference.
 - Selectable-folder validation, mailbox locking, provider confirmation, safe normalized output, and audit append are covered by fake-provider and service tests.
 - No expunge or permanent delete operation exists; stale and cross-account references remain rejected by the adapter.
-- Explicit durable `intent:"draft"` and `cancelPrepared` are covered. Provider Drafts APPEND is intentionally deferred and no fake provider draft is created.
+- Explicit durable `intent:"draft"`, strict `saveDraft`, provider Drafts APPEND, exact Message-ID/`\\Draft` verification, idempotent repeat, cancellation, account isolation, ambiguous outcome blocking, and `cancelPrepared` are covered. No fake local provider draft is claimed.
 
 ## Slice 1 — local durable foundation
 
@@ -111,3 +111,11 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 - [x] Fake-adapter tests verify selected bytes, size, SHA-256, base64 public output, out-of-range/cross-account/stale behavior, and MCP redaction excludes raw MIME and raw content fields.
 - [x] Exactly four MCP tools remain; delete semantics remain trash-only with no EXPUNGE or permanent deletion.
 - [x] Typecheck, full tests, build, audit, and diff check pass; no provider was contacted and no mail was sent.
+
+## Slice 11 — provider-visible drafts
+
+- [x] `saveDraft` is strict, durable, account-bound, idempotent, and limited to `PREPARED` messages with `intent:"draft"`; normal SMTP execution rejects draft intent.
+- [x] Configured `draftsFolder` is validated as selectable; without it, the adapter discovers selectable special-use `\\Drafts`; Sent is never an APPEND destination.
+- [x] Fake-provider coverage verifies `\\Draft`, exact Message-ID, provider UID/UIDVALIDITY, mailbox locking, missing/ambiguous UID failure, repeat idempotency, cancellation, account isolation, and redacted MCP output.
+- [x] An exception after APPEND begins leaves durable verification-required state and a second call performs no APPEND.
+- [x] Final local verification: `npm run typecheck`, `npm test`, `npm run build`, offline high-severity audit, and `git diff --check` pass with 87 tests and 0 failures; no provider was contacted and no mail was sent.

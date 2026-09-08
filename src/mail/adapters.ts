@@ -7,6 +7,7 @@ import type { CredentialResolver } from "./credentials.js";
 
 export interface ImapAdapter {
   verifySent(messageIdHeader: string): Promise<boolean>;
+  appendDraft?(rawMime: Buffer, folder: string, context: DraftAppendContext): Promise<DraftAppendResult>;
   listFolders?(): Promise<readonly MailFolder[]>;
   checkConnectivity?(): Promise<void>;
   list?(folder: string, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
@@ -17,6 +18,8 @@ export interface ImapAdapter {
   thread?(folder: string, anchorReference: string, limit?: number): Promise<readonly MailSummary[]>;
   mutate?(action: MailboxMutation): Promise<MailboxMutationResult>;
 }
+export interface DraftAppendContext { readonly accountId: string; readonly messageIdHeader: string; }
+export interface DraftAppendResult { readonly reference: string; readonly folder: string; readonly uid: number; readonly uidValidity: number; }
 export interface MailSearchFilters { readonly from?: string | undefined; readonly to?: string | undefined; readonly cc?: string | undefined; readonly subject?: string | undefined; readonly since?: string | undefined; readonly before?: string | undefined; readonly hasAttachment?: boolean | undefined; readonly isRead?: boolean | undefined; readonly isFlagged?: boolean | undefined; readonly messageId?: string | undefined; }
 export interface DownloadedAttachment { readonly filename: string; readonly contentType: string; readonly size: number; readonly sha256: string; readonly content: Buffer; }
 export type MailboxMutationType = "markRead" | "markUnread" | "addFlag" | "removeFlag" | "move" | "copy" | "trash" | "restore";
@@ -113,7 +116,7 @@ export interface MailForwardMetadata { readonly originalMessageReference?: strin
 export interface MailSummary { readonly reference: string; readonly folder: string; readonly uid: number; /** Internal cursor/reference binding; removed at the MCP boundary. */ readonly uidValidity?: number; readonly subject?: string | undefined; readonly messageId?: string | undefined; readonly date?: string | undefined; readonly from: readonly MailAddress[]; readonly to: readonly MailAddress[]; readonly cc: readonly MailAddress[]; readonly replyTo?: readonly MailAddress[] | undefined; readonly inReplyTo?: string | undefined; readonly references?: readonly string[] | undefined; readonly forwarding?: MailForwardMetadata | undefined; readonly size?: number | undefined; readonly flags: readonly string[]; }
 export interface MailAttachment { readonly filename?: string; readonly contentType?: string; readonly size?: number; readonly content?: Buffer; readonly disposition?: string; readonly contentId?: string; }
 export interface MailMessage extends MailSummary { readonly text?: string | undefined; readonly html?: string | undefined; readonly attachments: readonly MailAttachment[]; }
-export interface ImapFlowClient { connect(): Promise<void>; logout(): Promise<void>; close(): void; list(): Promise<ListResponse[]>; getMailboxLock(path: string): Promise<{ release(): void }>; search(query: SearchObject, options?: { uid?: boolean }): Promise<number[] | false | undefined>; fetch(range: string | number[], query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): AsyncGenerator<FetchMessageObject, false | void, undefined>; fetchOne(seq: string | number, query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): Promise<FetchMessageObject | false | undefined>; messageFlagsAdd?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageFlagsRemove?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageMove?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | unknown>; messageCopy?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | unknown>; }
+export interface ImapFlowClient { connect(): Promise<void>; logout(): Promise<void>; close(): void; list(): Promise<ListResponse[]>; getMailboxLock(path: string): Promise<{ release(): void }>; append?(path: string | string[], content: string | Buffer, flags?: string[], idate?: Date | string): Promise<{ destination: string; uidValidity?: bigint | number | undefined; uid?: number | undefined; seq?: number | undefined } | false>; search(query: SearchObject, options?: { uid?: boolean }): Promise<number[] | false | undefined>; fetch(range: string | number[], query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): AsyncGenerator<FetchMessageObject, false | void, undefined>; fetchOne(seq: string | number, query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): Promise<FetchMessageObject | false | undefined>; messageFlagsAdd?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageFlagsRemove?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageMove?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | { uidMap?: Map<number, number> | undefined; uidValidity?: bigint | number | undefined } | false | undefined>; messageCopy?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | { uidMap?: Map<number, number> | undefined; uidValidity?: bigint | number | undefined } | false | undefined>; }
 export type ImapFlowClientFactory = (options: ImapFlowOptions) => ImapFlowClient;
 
 export interface ImapFlowMailAdapterOptions {
@@ -181,6 +184,30 @@ export class ImapFlowMailAdapter implements ImapAdapter {
 
   async listFolders(): Promise<readonly MailFolder[]> { return this.withClient(async (client) => (await client.list()).filter((folder) => !folder.flags?.has("\\Noselect") && !folder.flags?.has("\\NOSELECT")).map((folder) => ({ path: folder.path, name: folder.name, delimiter: folder.delimiter, ...(folder.specialUse === undefined ? {} : { specialUse: folder.specialUse }) }))); }
 
+  async appendDraft(rawMime: Buffer, folder: string, context: DraftAppendContext): Promise<DraftAppendResult> {
+    if (context.accountId !== this.options.account.accountId || !/^<[^<>\r\n]+>$/.test(context.messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Draft append context is invalid for this account.");
+    return this.withClient(async (client) => {
+      if (!client.append) throw new SafeError("UNSUPPORTED_OPERATION", "The configured IMAP provider does not support draft APPEND.");
+      const lock = await client.getMailboxLock(folder);
+      try {
+        const appended = await client.append(folder, rawMime, ["\\Draft"]);
+        if (!appended) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the draft append.");
+        const uidValidity = this.selectedUidValidity(client);
+        const returnedUid = typeof appended.uid === "number" && Number.isSafeInteger(appended.uid) && appended.uid > 0 ? appended.uid : undefined;
+        let uid: number;
+        if (returnedUid === undefined) {
+          const found = await client.search({ header: { "Message-ID": context.messageIdHeader } }, { uid: true });
+          const candidates = (Array.isArray(found) ? found : []).filter((value) => Number.isSafeInteger(value) && value > 0).slice(0, 2);
+          if (candidates.length !== 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return an unambiguous draft UID.");
+          uid = candidates[0]!;
+        } else uid = returnedUid;
+        const confirmed = await client.fetchOne(uid, { uid: true, envelope: true, flags: true }, { uid: true });
+        if (!confirmed || confirmed.uid !== uid || confirmed.envelope?.messageId !== context.messageIdHeader || ![...(confirmed.flags ?? [])].some((flag) => flag.toLowerCase() === "\\draft")) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the exact draft Message-ID and flag.");
+        return { reference: encodeReference(this.options.account.accountId, folder, uid, uidValidity), folder, uid, uidValidity };
+      } finally { lock.release(); }
+    });
+  }
+
   async checkConnectivity(): Promise<void> { await this.withClient(async () => undefined); }
 
   async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number, filters?: MailSearchFilters): Promise<readonly MailSummary[]> {
@@ -234,6 +261,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
       try {
         const uidValidity = this.validateUidValidity(client, target.uidValidity);
         let resultUid = target.uid;
+        let resultUidValidity = uidValidity;
         if (action.type === "markRead" || action.type === "markUnread" || action.type === "addFlag" || action.type === "removeFlag") {
           const method = action.type === "markRead" || action.type === "addFlag" ? client.messageFlagsAdd : client.messageFlagsRemove;
           const flags = action.type === "markRead" || action.type === "markUnread" ? ["\\Seen"] : [action.flag!];
@@ -252,24 +280,25 @@ export class ImapFlowMailAdapter implements ImapAdapter {
           const method = action.type === "copy" ? client.messageCopy : client.messageMove;
           if (!method) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support this mailbox mutation.");
           const moved = await method.call(client, target.uid, destination, { uid: true });
-          if (!Array.isArray(moved) || moved.length !== 1 || !Number.isSafeInteger(moved[0]) || moved[0] < 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the mutation.");
-          resultUid = moved[0];
+          const movedMeta = moved && !Array.isArray(moved) && typeof moved === "object" ? moved : undefined;
+          const mappedUid = Array.isArray(moved) ? moved[0] : movedMeta?.uidMap instanceof Map ? movedMeta.uidMap.get(target.uid) : undefined;
+          if (typeof mappedUid !== "number" || !Number.isSafeInteger(mappedUid) || mappedUid < 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the mutation.");
+          resultUid = mappedUid;
+          if (typeof movedMeta?.uidValidity === "bigint") resultUidValidity = Number(movedMeta.uidValidity);
+          else if (typeof movedMeta?.uidValidity === "number" && Number.isSafeInteger(movedMeta.uidValidity)) resultUidValidity = movedMeta.uidValidity;
         }
         const confirmationFolder = action.type === "move" || action.type === "trash" || action.type === "restore" ? (action.type === "restore" ? this.options.account.inboxFolder : action.type === "trash" ? (await client.list()).find((folder) => folder.specialUse?.toLowerCase() === "\\trash".toLowerCase() && !folder.flags?.has("\\Noselect") && !folder.flags?.has("\\NOSELECT"))?.path : action.destinationFolder!) : target.folder;
         if (!confirmationFolder) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the destination mailbox.");
-        const confirmationLock = confirmationFolder === target.folder ? lock : await client.getMailboxLock(confirmationFolder);
-        try {
-          const confirmed = await client.fetchOne(resultUid, { uid: true, flags: true }, { uid: true });
-          if (!confirmed || confirmed.uid !== resultUid) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the mutation.");
-          const flags = [...(confirmed.flags ?? [])];
-          const hasFlag = (flag: string) => flags.includes(flag);
-          if (action.type === "markRead" && !hasFlag("\\Seen")) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the read state.");
-          if (action.type === "markUnread" && hasFlag("\\Seen")) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the unread state.");
-          if (action.type === "addFlag" && !hasFlag(action.flag!)) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the flag.");
-          if (action.type === "removeFlag" && hasFlag(action.flag!)) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the flag removal.");
-          const confirmationUidValidity = confirmationFolder === target.folder ? uidValidity : this.validateUidValidity(client, undefined);
-          return { action: action.type, reference: encodeReference(this.options.account.accountId, confirmationFolder, resultUid, confirmationUidValidity), folder: confirmationFolder, uid: resultUid, flags };
-        } finally { if (confirmationLock !== lock) confirmationLock.release(); }
+        if (action.type === "move" || action.type === "copy" || action.type === "trash" || action.type === "restore") return { action: action.type, reference: encodeReference(this.options.account.accountId, confirmationFolder, resultUid, resultUidValidity), folder: confirmationFolder, uid: resultUid, flags: [] };
+        const confirmed = await client.fetchOne(resultUid, { uid: true, flags: true }, { uid: true });
+        if (!confirmed || confirmed.uid !== resultUid) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the mutation.");
+        const flags = [...(confirmed.flags ?? [])];
+        const hasFlag = (flag: string) => flags.includes(flag);
+        if (action.type === "markRead" && !hasFlag("\\Seen")) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the read state.");
+        if (action.type === "markUnread" && hasFlag("\\Seen")) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the unread state.");
+        if (action.type === "addFlag" && !hasFlag(action.flag!)) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the flag.");
+        if (action.type === "removeFlag" && hasFlag(action.flag!)) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the flag removal.");
+        return { action: action.type, reference: encodeReference(this.options.account.accountId, confirmationFolder, resultUid, resultUidValidity), folder: confirmationFolder, uid: resultUid, flags };
       } finally { lock.release(); }
     });
   }

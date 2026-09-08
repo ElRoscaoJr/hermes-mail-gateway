@@ -80,7 +80,7 @@ The SQLite database is the source of truth for gateway intent, idempotency, stat
 | `imap_endpoint` / `smtp_endpoint` | Configuration references; never tool-visible as raw secret-bearing values. |
 | `credential_ref` | IMAP keychain/Secret Service reference, never credential value. |
 | `smtp_credential_ref` | Optional SMTP keychain/Secret Service reference; NULL means fall back to `credential_ref`. Never a credential value. |
-| `sent_policy` | `provider_managed` for every account. IMAP APPEND is not implemented. |
+| `sent_policy` | `provider_managed` for every account. The gateway never appends a Sent copy. Provider Drafts APPEND is a separate explicit `saveDraft` action. |
 | `enabled` | Operator-controlled activation flag. |
 | `allowed_sender` | Exact configured sender identity or domain policy. |
 | `mailbox_policy` | Query limits, attachment roots, and size limits; folders are discovered from the authenticated provider. |
@@ -174,7 +174,7 @@ There is no transition from `OUTCOME_UNKNOWN` to a blind resend. A future explic
 ### Provider Sent policy
 
 - Gmail and Zoho use provider-managed Sent by default; the gateway does not append a second copy.
-- All accounts use provider-managed Sent copies. The gateway does not implement IMAP APPEND.
+- All accounts use provider-managed Sent copies. The gateway does not append to Sent. A strict `mail_execute` `saveDraft` action may append stored MIME only to the account's configured selectable drafts folder or discovered selectable `\\Drafts` folder, with `\\Draft` and exact Message-ID verification.
 - Verification searches the configured Sent location for the exact preassigned Message-ID and applies bounded matching rules; subject/time/recipient coincidence alone is insufficient.
 
 ## Permissions matrix

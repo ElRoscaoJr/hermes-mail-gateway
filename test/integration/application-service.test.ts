@@ -72,6 +72,49 @@ test("cancelPrepared is durable and does not invoke a provider", async () => {
   assert.deepEqual(first.calls, []);
 });
 
+test("saveDraft appends once to the exact Drafts folder, is idempotent, and never uses Sent", async () => {
+  const base = fixture();
+  const calls: Array<{ folder: string; context: string }> = [];
+  const imap: ImapAdapter = {
+    verifySent: async () => false,
+    listFolders: async () => [{ path: "Inbox", name: "Inbox", delimiter: "/" }, { path: "Brouillons", name: "Brouillons", delimiter: "/", specialUse: "\\Drafts" }, { path: "Sent", name: "Sent", delimiter: "/", specialUse: "\\Sent" }],
+    appendDraft: async (_rawMime, folder, context) => { calls.push({ folder, context: context.messageIdHeader }); return { reference: "opaque-draft-reference", folder, uid: 41, uidValidity: 9 }; },
+  };
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
+  const prepared = await service.mailPrepare({ accountId: "acct", intent: "draft", idempotencyKey: "draft-save-123", recipients: ["recipient@example.test"], subject: "Draft", textBody: "body", attachments: [] }, context) as { messageId: string; messageIdHeader: string };
+  const first = await service.mailExecute({ accountId: "acct", action: { type: "saveDraft", messageId: prepared.messageId } }, context) as Record<string, unknown>;
+  const second = await service.mailExecute({ accountId: "acct", action: { type: "saveDraft", messageId: prepared.messageId } }, context) as Record<string, unknown>;
+  assert.deepEqual(calls, [{ folder: "Brouillons", context: prepared.messageIdHeader }]);
+  assert.equal(first.draftSaveStatus, "SAVED");
+  assert.deepEqual(second, first);
+  assert.equal(JSON.stringify(first).includes("Sent"), false);
+});
+
+test("saveDraft honors an explicitly configured selectable drafts folder without localized-name assumptions", async () => {
+  const base = fixture();
+  base.accounts.upsert({ accountId: "acct", displayName: "Synthetic", providerKind: "zoho", imapEndpoint: "imap://localhost", smtpEndpoint: "smtp://localhost", credentialRef: "keychain:test", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [base.dir], inboxFolder: "Inbox", sentFolder: "Sent", draftsFolder: "Brouillons-Configured" });
+  let folderUsed = "";
+  const imap: ImapAdapter = { verifySent: async () => false, listFolders: async () => [{ path: "Brouillons-Configured", name: "Localized draft mailbox", delimiter: "/" }, { path: "Sent", name: "Sent", delimiter: "/" }], appendDraft: async (_raw, folder) => { folderUsed = folder; return { reference: "configured-draft", folder, uid: 3, uidValidity: 1 }; } };
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
+  const prepared = await service.mailPrepare({ accountId: "acct", intent: "draft", idempotencyKey: "draft-config-123", recipients: ["recipient@example.test"], subject: "Draft", textBody: "body", attachments: [] }, context) as { messageId: string };
+  await service.mailExecute({ accountId: "acct", action: { type: "saveDraft", messageId: prepared.messageId } }, context);
+  assert.equal(folderUsed, "Brouillons-Configured");
+});
+
+test("saveDraft is account-bound and ambiguous provider outcomes are permanently verification-required", async () => {
+  const base = fixture();
+  base.accounts.upsert({ accountId: "other", displayName: "Other", providerKind: "gmail", imapEndpoint: "imaps://other.example.test", smtpEndpoint: "smtps://other.example.test", credentialRef: "keychain:private/other", sentPolicy: "provider_managed", enabled: true, allowedSender: "other@example.test", allowedAttachmentRoots: [base.dir], inboxFolder: "INBOX", sentFolder: "Sent" });
+  let appends = 0;
+  const imap: ImapAdapter = { verifySent: async () => false, listFolders: async () => [{ path: "Drafts", name: "Drafts", delimiter: "/", specialUse: "\\Drafts" }], appendDraft: async () => { appends += 1; throw new Error("append outcome unknown"); } };
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }], ["other", { imap, smtp: new FakeSmtpAdapter() }]]));
+  const prepared = await service.mailPrepare({ accountId: "acct", intent: "draft", idempotencyKey: "draft-ambiguous-123", recipients: ["recipient@example.test"], subject: "Draft", textBody: "body", attachments: [] }, context) as { messageId: string };
+  await assert.rejects(service.mailExecute({ accountId: "other", action: { type: "saveDraft", messageId: prepared.messageId } }, context), { code: "ACCOUNT_NOT_FOUND" });
+  await assert.rejects(service.mailExecute({ accountId: "acct", action: { type: "saveDraft", messageId: prepared.messageId } }, context), { code: "DRAFT_SAVE_VERIFICATION_REQUIRED" });
+  assert.equal(base.repo.get(prepared.messageId).draftSaveStatus, "APPEND_STARTED");
+  await assert.rejects(service.mailExecute({ accountId: "acct", action: { type: "saveDraft", messageId: prepared.messageId } }, context), { code: "DRAFT_SAVE_VERIFICATION_REQUIRED" });
+  assert.equal(appends, 1);
+});
+
 test("failed account health is generic and does not prevent listing", async () => {
   const base = fixture();
   const imap: ImapAdapter = {

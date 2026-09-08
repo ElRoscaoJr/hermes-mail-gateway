@@ -13,6 +13,8 @@ Methods:
 
 Each call receives the fixed authorized caller `Hermes main` and a fresh UUID `correlationId`. Implementations may return a value or throw `SafeError`; unexpected exceptions are converted to `INTERNAL_SAFE_FAILURE`. Raw MIME is an internal repository value and is omitted from MCP content and structured results; binary values are never serialized as public tool output.
 
+`mail_execute` also accepts the strict action `{ type: "saveDraft", messageId }`. It operates only on an account-owned durable `PREPARED` message with `intent: "draft"`, resolves configured `draftsFolder` or selectable IMAP `\\Drafts`, and appends the stored MIME with `\\Draft`. The exact Message-ID and flag are verified before durable confirmation. Confirmed calls return only safe provider reference metadata; append exceptions or ambiguous UID results become non-retryable verification-required state. Normal execution never sends draft intent through SMTP, and `cancelPrepared` is available before provider submission.
+
 ## `MailGatewayService`
 
 `MailGatewayService` is the application composition used by the MCP boundary:
