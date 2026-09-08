@@ -6,7 +6,7 @@ import { FakeSmtpAdapter, type ImapAdapter, type MailFolder, type MailMessage, t
 import { SafeError } from "../../src/errors.js";
 
 function message(folder: string, reference: string, subject: string): MailSummary {
-  return { folder, reference, uid: 7, subject, messageId: `<${reference}@example.test>`, from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 };
+  return { folder, reference, uid: 7, uidValidity: 1, subject, messageId: `<${reference}@example.test>`, from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 };
 }
 
 class FakeMailboxAdapter implements ImapAdapter {

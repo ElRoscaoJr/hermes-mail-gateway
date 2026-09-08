@@ -9,6 +9,8 @@ This is an operator-run checklist, not an automated test. It must use only:
 
 Never use a customer, colleague, mailing list, forwarding address, or any other third-party recipient. Do not put the recipient address, credential values, provider transcripts, or mailbox content in this repository. Do not use commands that print credential values or configuration contents.
 
+This slice requires no provider send. If a mailbox is recreated or its IMAP `UIDVALIDITY` changes, discard all references and cursors and obtain a fresh listing; stale values must return `REFERENCE_STALE` without using the old UID. Startup recovery is verified only with a disposable database: expired execution leases become `OUTCOME_UNKNOWN` with audit evidence and are never automatically resubmitted.
+
 ## 1. Preflight and isolation
 
 1. Confirm that `<operator-self-test-address>` is controlled by the operator and is the only recipient that will be used.

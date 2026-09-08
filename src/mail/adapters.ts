@@ -9,8 +9,8 @@ export interface ImapAdapter {
   verifySent(messageIdHeader: string): Promise<boolean>;
   listFolders?(): Promise<readonly MailFolder[]>;
   checkConnectivity?(): Promise<void>;
-  list?(folder: string, limit?: number, afterUid?: number): Promise<readonly MailSummary[]>;
-  search?(folder: string, query: string, limit?: number, afterUid?: number): Promise<readonly MailSummary[]>;
+  list?(folder: string, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
+  search?(folder: string, query: string, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
   read?(reference: string): Promise<MailMessage>;
   thread?(folder: string, anchorReference: string, limit?: number): Promise<readonly MailSummary[]>;
 }
@@ -102,7 +102,7 @@ export class FakeImapAdapter implements ImapAdapter { constructor(private readon
 export interface MailFolder { readonly path: string; readonly name: string; readonly delimiter: string; readonly specialUse?: string; }
 export interface MailAddress { readonly name?: string | undefined; readonly address?: string | undefined; }
 export interface MailForwardMetadata { readonly originalMessageReference?: string | undefined; readonly originalMessageId?: string | undefined; readonly originalSubject?: string | undefined; }
-export interface MailSummary { readonly reference: string; readonly folder: string; readonly uid: number; readonly subject?: string | undefined; readonly messageId?: string | undefined; readonly date?: string | undefined; readonly from: readonly MailAddress[]; readonly to: readonly MailAddress[]; readonly cc: readonly MailAddress[]; readonly replyTo?: readonly MailAddress[] | undefined; readonly inReplyTo?: string | undefined; readonly references?: readonly string[] | undefined; readonly forwarding?: MailForwardMetadata | undefined; readonly size?: number | undefined; readonly flags: readonly string[]; }
+export interface MailSummary { readonly reference: string; readonly folder: string; readonly uid: number; /** Internal cursor/reference binding; removed at the MCP boundary. */ readonly uidValidity?: number; readonly subject?: string | undefined; readonly messageId?: string | undefined; readonly date?: string | undefined; readonly from: readonly MailAddress[]; readonly to: readonly MailAddress[]; readonly cc: readonly MailAddress[]; readonly replyTo?: readonly MailAddress[] | undefined; readonly inReplyTo?: string | undefined; readonly references?: readonly string[] | undefined; readonly forwarding?: MailForwardMetadata | undefined; readonly size?: number | undefined; readonly flags: readonly string[]; }
 export interface MailAttachment { readonly filename?: string; readonly contentType?: string; readonly size?: number; readonly content?: Buffer; }
 export interface MailMessage extends MailSummary { readonly text?: string | undefined; readonly html?: string | undefined; readonly attachments: readonly MailAttachment[]; }
 export interface ImapFlowClient { connect(): Promise<void>; logout(): Promise<void>; close(): void; list(): Promise<ListResponse[]>; getMailboxLock(path: string): Promise<{ release(): void }>; search(query: SearchObject, options?: { uid?: boolean }): Promise<number[] | false | undefined>; fetch(range: string | number[], query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): AsyncGenerator<FetchMessageObject, false | void, undefined>; fetchOne(seq: string | number, query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): Promise<FetchMessageObject | false | undefined>; }
@@ -125,9 +125,9 @@ function parseEndpoint(endpoint: string): { host: string; port: number; secure: 
   return { host: url.hostname, port, secure: url.protocol === "imaps:" };
 }
 
-function encodeReference(accountId: string, folder: string, uid: number): string { return Buffer.from(JSON.stringify({ accountId, folder, uid }), "utf8").toString("base64url"); }
-function decodeReference(reference: string, accountId: string): { folder: string; uid: number } {
-  try { const value = JSON.parse(Buffer.from(reference, "base64url").toString("utf8")) as { accountId?: unknown; folder?: unknown; uid?: unknown }; if (value.accountId !== accountId || typeof value.folder !== "string" || !value.folder || !Number.isSafeInteger(value.uid) || (value.uid as number) < 1) throw new Error(); return { folder: value.folder, uid: value.uid as number }; } catch { throw new SafeError("REFERENCE_INVALID", "Message reference is invalid for this account."); }
+function encodeReference(accountId: string, folder: string, uid: number, uidValidity: number): string { return Buffer.from(JSON.stringify({ accountId, folder, uid, uidValidity }), "utf8").toString("base64url"); }
+function decodeReference(reference: string, accountId: string): { folder: string; uid: number; uidValidity: number } {
+  try { const value = JSON.parse(Buffer.from(reference, "base64url").toString("utf8")) as { accountId?: unknown; folder?: unknown; uid?: unknown; uidValidity?: unknown }; if (value.accountId !== accountId || typeof value.folder !== "string" || !value.folder || !Number.isSafeInteger(value.uid) || (value.uid as number) < 1 || !Number.isSafeInteger(value.uidValidity) || (value.uidValidity as number) < 1) throw new Error(); return { folder: value.folder, uid: value.uid as number, uidValidity: value.uidValidity as number }; } catch { throw new SafeError("REFERENCE_INVALID", "Message reference is invalid for this account."); }
 }
 function address(value: { name?: string | undefined; address?: string | undefined } | undefined): MailAddress | undefined { if (!value) return undefined; return { ...(value.name === undefined ? {} : { name: value.name }), ...(value.address === undefined ? {} : { address: value.address }) }; }
 function addresses(values: readonly { name?: string | undefined; address?: string | undefined }[] | undefined): MailAddress[] { return (values ?? []).map(address).filter((item): item is MailAddress => item !== undefined); }
@@ -154,6 +154,18 @@ export class ImapFlowMailAdapter implements ImapAdapter {
   private readonly maxReadBytes: number;
   constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 101); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 1_000_000, 1), 10_000_000); }
 
+  private selectedUidValidity(client: ImapFlowClient): number {
+    const raw = (client as ImapFlowClient & { mailbox?: { uidValidity?: bigint | number } }).mailbox?.uidValidity;
+    const value = typeof raw === "bigint" ? Number(raw) : raw;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider returned no valid mailbox generation.");
+    return value;
+  }
+  private validateUidValidity(client: ImapFlowClient, expected: number | undefined): number {
+    const actual = this.selectedUidValidity(client);
+    if (expected !== undefined && actual !== expected) throw new SafeError("REFERENCE_STALE", "The mailbox changed; query again for a current reference or cursor.");
+    return actual;
+  }
+
   private async withClient<T>(operation: (client: ImapFlowClient) => Promise<T>): Promise<T> {
     let client: ImapFlowClient | undefined;
     try { const credential = await this.options.credentials.get(this.options.account.credentialRef); if (!credential) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider is unavailable."); client = this.factory({ ...this.endpoint, auth: { user: credential.username, pass: credential.password }, logger: false }); await client.connect(); return await operation(client); } catch (error) { return mapError(error); } finally { if (client) { try { await client.logout(); } catch { /* close below */ } client.close(); } }
@@ -163,15 +175,15 @@ export class ImapFlowMailAdapter implements ImapAdapter {
 
   async checkConnectivity(): Promise<void> { await this.withClient(async () => undefined); }
 
-  async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number): Promise<readonly MailSummary[]> {
+  async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]> {
     const bounded = Math.min(Math.max(limit, 1), this.maxResults);
-    return this.withClient(async (client) => { const lock = await client.getMailboxLock(folder); try { const base: SearchObject = query ? { or: [{ text: query }, { subject: query }, { header: { Subject: query } }] } : { all: true }; const search: SearchObject = afterUid === undefined ? base : { ...base, uid: `${afterUid + 1}:*` }; const found = await client.search(search, { uid: true }); const uids = (Array.isArray(found) ? found : []).slice(0, bounded); const result: MailSummary[] = []; for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) result.push(this.summary(folder, message)); return result.slice(0, bounded); } finally { lock.release(); } });
+    return this.withClient(async (client) => { const lock = await client.getMailboxLock(folder); try { const uidValidity = this.validateUidValidity(client, expectedUidValidity); const base: SearchObject = query ? { or: [{ text: query }, { subject: query }, { header: { Subject: query } }] } : { all: true }; const search: SearchObject = afterUid === undefined ? base : { ...base, uid: `${afterUid + 1}:*` }; const found = await client.search(search, { uid: true }); const uids = (Array.isArray(found) ? found : []).slice(0, bounded); const result: MailSummary[] = []; for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) result.push(this.summary(folder, message, uidValidity)); return result.slice(0, bounded); } finally { lock.release(); } });
   }
 
-  async list(folder: string, limit = this.maxResults, afterUid?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, undefined, limit, afterUid); }
-  async search(folder: string, query: string, limit = this.maxResults, afterUid?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, query, limit, afterUid); }
+  async list(folder: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, undefined, limit, afterUid, expectedUidValidity); }
+  async search(folder: string, query: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, query, limit, afterUid, expectedUidValidity); }
 
-  async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true }); if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); const parsed = await simpleParser(message.source); const summary = this.summary(target.folder, message); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item) => ({ ...(item.filename === undefined ? {} : { filename: item.filename }), ...(item.contentType === undefined ? {} : { contentType: item.contentType }), ...(item.size === undefined ? {} : { size: item.size }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
+  async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const uidValidity = this.validateUidValidity(client, target.uidValidity); const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true }); if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); const parsed = await simpleParser(message.source); const summary = this.summary(target.folder, message, uidValidity); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item) => ({ ...(item.filename === undefined ? {} : { filename: item.filename }), ...(item.contentType === undefined ? {} : { contentType: item.contentType }), ...(item.size === undefined ? {} : { size: item.size }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
 
   async thread(folder: string, anchorReference: string, limit = this.maxResults): Promise<readonly MailSummary[]> {
     const bounded = Math.min(Math.max(limit, 1), this.maxResults);
@@ -183,6 +195,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
     return this.withClient(async (client) => {
       const lock = await client.getMailboxLock(folder);
       try {
+        const uidValidity = this.validateUidValidity(client, target.uidValidity);
         const criteria: SearchObject[] = ids.flatMap((id) => [
           { header: { "Message-ID": id } },
           { header: { "In-Reply-To": id } },
@@ -204,7 +217,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
           const key = `${folder}\u0000${message.uid}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          messages.push(this.summary(folder, message));
+          messages.push(this.summary(folder, message, uidValidity));
           if (messages.length >= bounded) break;
         }
         return messages.slice(0, bounded);
@@ -214,5 +227,5 @@ export class ImapFlowMailAdapter implements ImapAdapter {
 
   async verifySent(messageIdHeader: string): Promise<boolean> { if (!/^<[^<>\r\n]+>$/.test(messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Message-ID header is invalid."); return this.withClient(async (client) => { const lock = await client.getMailboxLock(this.options.account.sentFolder); try { const found = await client.search({ header: { "Message-ID": messageIdHeader } }, { uid: true }); for (const uid of (Array.isArray(found) ? found : []).slice(0, this.maxResults)) { const message = await client.fetchOne(uid, { uid: true, envelope: true }, { uid: true }); if (message && message.envelope?.messageId === messageIdHeader) return true; } return false; } finally { lock.release(); } }); }
 
-  private summary(folder: string, message: FetchMessageObject): MailSummary { const envelope = message.envelope; return { reference: encodeReference(this.options.account.accountId, folder, message.uid), folder, uid: message.uid, ...(envelope?.subject === undefined ? {} : { subject: envelope.subject }), ...(envelope?.messageId === undefined ? {} : { messageId: envelope.messageId }), ...(envelope?.date === undefined ? {} : { date: new Date(envelope.date).toISOString() }), from: addresses(envelope?.from), to: addresses(envelope?.to), cc: addresses(envelope?.cc), ...(envelope?.replyTo === undefined ? {} : { replyTo: addresses(envelope.replyTo) }), ...(envelope?.inReplyTo === undefined ? {} : { inReplyTo: safeHeader(envelope.inReplyTo) }), ...(message.size === undefined ? {} : { size: message.size }), flags: [...(message.flags ?? [])] }; }
+  private summary(folder: string, message: FetchMessageObject, uidValidity: number): MailSummary { const envelope = message.envelope; return { reference: encodeReference(this.options.account.accountId, folder, message.uid, uidValidity), folder, uid: message.uid, uidValidity, ...(envelope?.subject === undefined ? {} : { subject: envelope.subject }), ...(envelope?.messageId === undefined ? {} : { messageId: envelope.messageId }), ...(envelope?.date === undefined ? {} : { date: new Date(envelope.date).toISOString() }), from: addresses(envelope?.from), to: addresses(envelope?.to), cc: addresses(envelope?.cc), ...(envelope?.replyTo === undefined ? {} : { replyTo: addresses(envelope.replyTo) }), ...(envelope?.inReplyTo === undefined ? {} : { inReplyTo: safeHeader(envelope.inReplyTo) }), ...(message.size === undefined ? {} : { size: message.size }), flags: [...(message.flags ?? [])] }; }
 }

@@ -45,6 +45,22 @@ export class OutboxRepository {
     if (result.changes !== 1) { const current = this.get(messageId); throw new SafeError(current.state === "SEND_ATTEMPTED" ? "EXECUTION_IN_PROGRESS" : "STATE_CONFLICT", "Message cannot be claimed for execution."); }
     return this.get(messageId);
   }
+  /** Moves expired execution leases to verification-required OUTCOME_UNKNOWN without resubmitting SMTP. */
+  reconcileExpiredLeases(at = now()): number {
+    const rows = this.db.prepare("SELECT message_id, account_id, attempt_owner, lease_until FROM outbox_messages WHERE state = 'SEND_ATTEMPTED' AND lease_until IS NOT NULL AND lease_until < ?").all(at) as Array<{ message_id: string; account_id: string; attempt_owner: string | null; lease_until: string }>;
+    if (rows.length === 0) return 0;
+    const reconcile = this.db.transaction(() => {
+      let count = 0;
+      for (const row of rows) {
+        const result = this.db.prepare("UPDATE outbox_messages SET state = 'OUTCOME_UNKNOWN', provider_evidence = COALESCE(provider_evidence, 'recovery_required:expired_execution_lease'), attempt_owner = NULL, lease_until = NULL, updated_at = ? WHERE message_id = ? AND state = 'SEND_ATTEMPTED' AND lease_until = ?").run(at, row.message_id, row.lease_until);
+        if (result.changes !== 1) continue;
+        this.db.prepare("INSERT INTO audit_events(event_id, correlation_id, caller, tool, account_id, message_id, old_state, new_state, outcome_code, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(randomUUID(), `recovery:${row.message_id}`, "Hermes runtime", "startup_recovery", row.account_id, row.message_id, "SEND_ATTEMPTED", "OUTCOME_UNKNOWN", "OUTCOME_UNKNOWN", JSON.stringify(redact({ reason: "expired_execution_lease", previousOwner: row.attempt_owner, expiredAt: row.lease_until })), at);
+        count += 1;
+      }
+      return count;
+    });
+    return reconcile();
+  }
   appendAudit(event: { correlationId: string; caller: string; tool: string; accountId?: string; messageId?: string; oldState?: string; newState?: string; outcomeCode: string; metadata: unknown }): void { this.db.prepare("INSERT INTO audit_events(event_id, correlation_id, caller, tool, account_id, message_id, old_state, new_state, outcome_code, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(randomUUID(), event.correlationId, event.caller, event.tool, event.accountId ?? null, event.messageId ?? null, event.oldState ?? null, event.newState ?? null, event.outcomeCode, JSON.stringify(redact(event.metadata)), now()); }
   private map(row: Record<string, unknown>): PreparedMessage { return { messageId: row.message_id as string, accountId: row.account_id as string, idempotencyKey: row.idempotency_key as string, messageIdHeader: row.message_id_header as string, fromAddress: row.from_address as string, recipients: JSON.parse(row.recipients as string) as string[], cc: JSON.parse((row.cc as string | null) ?? "[]") as string[], bcc: JSON.parse((row.bcc as string | null) ?? "[]") as string[], ...(row.reply_to === null || row.reply_to === undefined ? {} : { replyTo: row.reply_to as string }), ...(row.in_reply_to === null || row.in_reply_to === undefined ? {} : { inReplyTo: row.in_reply_to as string }), references: JSON.parse((row.references_header as string | null) ?? "[]") as string[], ...(typeof row.forwarding_metadata === "string" ? { forwarding: JSON.parse(row.forwarding_metadata) as NonNullable<PreparedMessage["forwarding"]> } : {}), subject: row.subject as string, ...(row.text_body === null ? {} : { textBody: row.text_body as string }), ...(row.html_body === null ? {} : { htmlBody: row.html_body as string }), attachments: JSON.parse(row.attachment_manifest as string) as never[], state: row.state as OutboxState }; }
 }

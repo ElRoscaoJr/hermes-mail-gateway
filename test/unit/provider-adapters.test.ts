@@ -134,9 +134,9 @@ test("SMTP diagnostics are bounded and never include provider response text", as
 });
 
 const imapAccount: AccountProjection = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX-custom", sentFolder: "Archive/Sent-custom" };
-function imapFake(messages: Record<string, { uid: number; source?: Buffer; envelope?: MessageEnvelopeObject }>, searched: number[] | ((query: SearchObject) => number[]) = []): ImapFlowClient & { options?: unknown; locks: string[]; searches: SearchObject[] } {
+function imapFake(messages: Record<string, { uid: number; source?: Buffer; envelope?: MessageEnvelopeObject }>, searched: number[] | ((query: SearchObject) => number[]) = []): ImapFlowClient & { options?: unknown; mailbox: { uidValidity: bigint }; locks: string[]; searches: SearchObject[] } {
   const state = { options: undefined as unknown, locks: [] as string[], searches: [] as SearchObject[] };
-  return { ...state, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async (query) => { state.searches.push(query); return typeof searched === "function" ? searched(query) : searched; }, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() } : false; } };
+  return { ...state, mailbox: { uidValidity: 1n }, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async (query) => { state.searches.push(query); return typeof searched === "function" ? searched(query) : searched; }, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() } : false; } };
 }
 
 test("IMAP adapter uses explicit folders, credentials, UID-safe references, and bounded reads", async () => {
@@ -166,6 +166,20 @@ test("IMAP adapter uses explicit folders, credentials, UID-safe references, and 
   assert.deepEqual(fake.searches[0], { or: [{ text: "read" }, { subject: "read" }, { header: { Subject: "read" } }] });
   assert.deepEqual(fake.locks, ["INBOX-custom", "INBOX-custom"]);
   assert.equal((await adapter.listFolders())[0]?.path, "INBOX-custom");
+});
+test("IMAP references are rejected after mailbox UIDVALIDITY changes before fetch", async () => {
+  const fake = imapFake({ "7": { uid: 7, source: Buffer.from("Subject: x\r\n\r\nbody") } }, [7]);
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  const reference = (await adapter.list("INBOX-custom", 1))[0]!.reference;
+  fake.mailbox = { uidValidity: 2n };
+  await assert.rejects(adapter.read(reference), { code: "REFERENCE_STALE" });
+});
+test("IMAP cursors are rejected after mailbox UIDVALIDITY changes before afterUid search", async () => {
+  const fake = imapFake({ "8": { uid: 8, envelope: { subject: "next" } } }, [8]);
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  fake.mailbox = { uidValidity: 2n };
+  await assert.rejects(adapter.list("INBOX-custom", 1, 7, 1), { code: "REFERENCE_STALE" });
+  assert.deepEqual(fake.searches, []);
 });
 
 test("IMAP folder discovery excludes non-selectable namespaces", async () => {
@@ -233,7 +247,7 @@ test("IMAP thread search uses server-side header criteria, includes the anchor, 
     return [];
   });
   const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
-  const anchor = (await adapter.read(Buffer.from(JSON.stringify({ accountId: "acct", folder: "INBOX-custom", uid: 7 }), "utf8").toString("base64url"))).reference;
+  const anchor = (await adapter.read(Buffer.from(JSON.stringify({ accountId: "acct", folder: "INBOX-custom", uid: 7, uidValidity: 1 }), "utf8").toString("base64url"))).reference;
   const result = await adapter.thread("INBOX-custom", anchor, 2);
   assert.deepEqual(result.map((item) => item.uid), [7, 8]);
   assert.deepEqual(fake.searches, [
@@ -246,7 +260,7 @@ test("IMAP thread search uses server-side header criteria, includes the anchor, 
 test("IMAP thread rejects a folder mismatch before searching the wrong mailbox", async () => {
   const fake = imapFake({ "7": { uid: 7, source: Buffer.from("Subject: Anchor\r\n\r\nbody"), envelope: { messageId: "<anchor@example.test>" } } }, [7]);
   const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
-  const reference = Buffer.from(JSON.stringify({ accountId: "acct", folder: "INBOX-custom", uid: 7 }), "utf8").toString("base64url");
+  const reference = Buffer.from(JSON.stringify({ accountId: "acct", folder: "INBOX-custom", uid: 7, uidValidity: 1 }), "utf8").toString("base64url");
   await assert.rejects(adapter.thread("Archive/Other", reference, 1), { code: "INVALID_INPUT", message: "Thread folder does not match message reference folder." });
   assert.deepEqual(fake.locks, []);
 });

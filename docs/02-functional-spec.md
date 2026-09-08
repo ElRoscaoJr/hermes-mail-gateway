@@ -4,6 +4,8 @@
 
 Hermes Mail Gateway is a local, fail-safe MCP service for querying and sending mail through trusted Gmail, Zoho, and generic IMAP/SMTP accounts. The v1 contract is intentionally small: four MCP tools, one `accountId` routing field, durable send state, and no automatic retry after an ambiguous provider outcome.
 
+This slice adds generation-safe mailbox identity: opaque message references and list/search cursors include account, folder, UID, and selected mailbox `UIDVALIDITY`. A stale generation returns `REFERENCE_STALE` before UID use and requires a fresh query. Startup recovery moves expired `SEND_ATTEMPTED` leases to audited, verification-required `OUTCOME_UNKNOWN` without SMTP submission. Validated limits include `maxQueryResults` (default 50, maximum 100) and `maxReadBytes` (default 1,000,000, maximum 10,000,000), in addition to recipient and attachment limits.
+
 The gateway is an authority for local intent and observed delivery state. It is not an authority that can guarantee a provider accepted a message when the network result is unknown.
 
 ## Functional requirements
@@ -194,6 +196,7 @@ Errors are stable, machine-readable, safe to expose, and accompanied by a correl
 | `INVALID_INPUT` | Validation | Schema, unknown field, address, header, or limit violation | Fix request. |
 | `ACCOUNT_NOT_FOUND` / `ACCOUNT_DISABLED` | Routing | Account is not configured or active | Select a configured account or ask operator. |
 | `REFERENCE_INVALID` / `MESSAGE_NOT_FOUND` | Mail reference | Opaque reference cannot be resolved | Query again and use a current reference. |
+| `REFERENCE_STALE` | Mail reference | The account mailbox `UIDVALIDITY` no longer matches the reference or cursor | Start a fresh list/search and do not reuse the old UID. |
 | `ATTACHMENT_FORBIDDEN` / `ATTACHMENT_CHANGED` | File policy | Path outside roots, unsafe file, or changed hash | Fix attachment and prepare again. |
 | `IDEMPOTENCY_CONFLICT` | Idempotency | Key reused with different request | Use the original result or a new key after review. |
 | `STATE_CONFLICT` / `EXECUTION_IN_PROGRESS` | Concurrency | Requested transition is not currently permitted | Inspect state; do not parallel-execute. |

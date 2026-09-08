@@ -20,8 +20,8 @@ Why this stack: it keeps the protocol surface mature and small while placing rel
 | Host | Debian 13, service user, systemd user supervision. |
 | Runtime | Node.js 22 LTS minimum; exact patch pinned before scaffold. |
 | Accounts | Gmail, Zoho, Zoho, and generic IMAP/SMTP. |
-| Transport | Local loopback HTTP MCP only; no remote exposure. |
-| Result limits | Configured server-side maximums for rows, body bytes, attachment bytes, recipients, and concurrent provider operations. Values are deployment configuration, not tool-controlled. |
+| Transport | Local stdio MCP only; loopback HTTP is deferred until authenticated transport exists. |
+| Result limits | Configured server-side maximums for query rows, read bytes, attachment bytes, and recipients. Query/read limits are implemented in this slice; concurrency, timeouts, rates, and backoff are the next P0 slice. |
 | Reliability budget | One execution claim per prepared message; zero blind retries; every attempt durably classified. |
 | Availability posture | Fail closed when SQLite, keychain, migrations, or authorization are unavailable. |
 
@@ -110,7 +110,7 @@ The source tree implements this map; runtime composition is provided by `src/run
 
 ## Security boundaries
 
-1. **Caller boundary:** every tool request is authenticated and authorized; only Hermes `main` is in scope. Loopback binding is necessary but not sufficient.
+1. **Caller boundary:** the stdio process boundary is trusted for Hermes `main`; authenticated loopback HTTP is deferred and must be designed before any remote transport.
 2. **Tool boundary:** strict schemas, no unknown fields, bounded results, safe error mapping, and rate/concurrency limits.
 3. **Account boundary:** `accountId` maps only to operator-configured account records. A caller cannot supply an endpoint or credential reference.
 4. **Filesystem boundary:** attachment paths are canonicalized and confined to configured roots; hashes are checked at prepare and execute.
@@ -175,4 +175,4 @@ The project is MIT-licensed. Before adding a dependency, record its exact versio
 
 ## Non-goals and deferred implementation decisions
 
-OAuth/API adapters, remote MCP, UI, provider webhooks, automatic retries, destructive mailbox operations, and customer-targeted tests remain outside v1. Exact package versions, token provisioning, provider folder names, retention values, and deployment secrets are intentionally external configuration and must not be written into repository artifacts.
+OAuth/API adapters, remote MCP, UI, provider webhooks, automatic retries, destructive mailbox operations, and customer-targeted tests remain outside v1. Connection/command timeouts, bounded concurrency, per-account rate policy, and provider backoff classification are the next P0 reliability slice. Exact package versions, token provisioning, provider folder names, retention values, and deployment secrets are intentionally external configuration and must not be written into repository artifacts.

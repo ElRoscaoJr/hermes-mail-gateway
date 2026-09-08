@@ -8,7 +8,7 @@ import { createRuntime, createRuntimeFromEnvironment, loadServerConfig } from ".
 
 function config(databasePath: string, root: string) {
   const account = (accountId: string) => ({ accountId, displayName: accountId, providerKind: "generic_imap_smtp" as const, imapEndpoint: "imap://localhost", smtpEndpoint: "smtp://localhost", credentialRef: "keychain:test/account", sentPolicy: "provider_managed" as const, enabled: true, allowedSender: `${accountId}@example.test`, allowedAttachmentRoots: [root], inboxFolder: "INBOX", sentFolder: "Sent" });
-  return { databasePath, attachmentRoots: [root], accounts: [account("first"), account("second")], limits: { maxRecipients: 10, maxAttachmentBytes: 1_000_000 } };
+  return { databasePath, attachmentRoots: [root], accounts: [account("first"), account("second")], limits: { maxRecipients: 10, maxAttachmentBytes: 1_000_000, maxQueryResults: 50, maxReadBytes: 1_000_000 } };
 }
 
 test("runtime requires an explicit configuration path and rejects duplicate accounts", () => {
