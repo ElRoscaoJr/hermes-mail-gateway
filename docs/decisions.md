@@ -85,3 +85,10 @@
 - Why: Mailboxes commonly contain user-created folders beyond Inbox and Sent, while opaque references and explicit thread checks preserve account and mailbox routing safety.
 - Alternatives rejected: Maintaining a static Inbox/Sent-only service allow-list; exposing raw provider folder responses.
 - Supersedes: none
+
+## D-013 — Single-message mailbox mutations and local draft cancellation
+- Date / phase: 2026-09-08 / Phase 5
+- Decision: Add reference-based mailbox mutations under `mail_execute`, limited to one UIDVALIDITY-bound message per call. Destinations are exact discovered selectable folders; Trash uses `\\Trash` special-use discovery and restore returns to the configured inbox. Add explicit durable draft intent and cancellation, while deferring provider Drafts APPEND.
+- Why: Mailbox state changes need provider confirmation, account isolation, mailbox locks, auditability, and no permanent deletion. Draft APPEND needs a durable provider outcome protocol that is not yet available.
+- Alternatives rejected: A fifth MCP tool, localized-name assumptions, permanent delete/expunge, batch mutation, and fake local provider drafts.
+- Supersedes: none

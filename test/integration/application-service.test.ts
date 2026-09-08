@@ -17,6 +17,7 @@ class FakeMailboxAdapter implements ImapAdapter {
   async listFolders(): Promise<readonly MailFolder[]> { this.calls.push("folders"); return [{ path: "Inbox", name: "Inbox", delimiter: "/" }, { path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All" }]; }
   async read(reference: string): Promise<MailMessage> { this.calls.push(`read:${reference}`); return { ...message("Inbox", reference, this.label), text: `safe body ${this.label}`, attachments: [], ...this.source }; }
   async thread(folder: string, reference: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`thread:${folder}:${reference}:${limit}`); return [message(folder, `${this.label}-thread`, "thread subject")]; }
+  async mutate(action: { type: "move" | "copy" | "markRead" | "markUnread" | "addFlag" | "removeFlag" | "trash" | "restore"; messageReference: string; destinationFolder?: string; flag?: "\\Flagged" | "\\Answered" }): Promise<{ action: typeof action.type; reference: string; folder: string; uid: number; flags: readonly string[] }> { this.calls.push(`mutate:${action.type}`); return { action: action.type, reference: action.messageReference, folder: action.destinationFolder ?? "Inbox", uid: 7, flags: [] }; }
   async verifySent(messageIdHeader: string): Promise<boolean> { this.calls.push(`verify:${messageIdHeader}`); return this.verified; }
   async checkConnectivity(): Promise<void> { this.calls.push("health:imap"); }
 }
@@ -52,6 +53,21 @@ test("mailAccounts skips all provider calls when health is disabled", async () =
   assert.equal(result.accounts.some((account) => "health" in account), false);
   assert.deepEqual(first.calls, []);
   assert.deepEqual(second.calls, []);
+});
+test("mailExecute performs one account-bound mutation only after destination discovery", async () => {
+  const { service, first } = serviceFixture();
+  const result = await service.mailExecute({ accountId: "acct", action: { type: "move", messageReference: "opaque-ref", destinationFolder: "Archive/Receipts" } }, context) as { action: string; folder: string; uid: number };
+  assert.deepEqual(result, { action: "move", messageReference: "opaque-ref", folder: "Archive/Receipts", uid: 7, flags: [] });
+  assert.deepEqual(first.calls, ["folders", "mutate:move"]);
+});
+test("cancelPrepared is durable and does not invoke a provider", async () => {
+  const { service, first } = serviceFixture();
+  const prepared = await service.mailPrepare({ accountId: "acct", intent: "draft", idempotencyKey: "draft-cancel-123", recipients: ["recipient@example.test"], subject: "Draft", textBody: "body", attachments: [] }, context) as { messageId: string; intent?: string };
+  assert.equal(prepared.intent, "draft");
+  await assert.rejects(service.mailExecute({ accountId: "acct", messageId: prepared.messageId, verifyOnly: false }, context), (error: unknown) => error instanceof SafeError && error.code === "UNSUPPORTED_OPERATION");
+  const result = await service.mailExecute({ accountId: "acct", action: { type: "cancelPrepared", messageId: prepared.messageId } }, context) as { state: string; action: string };
+  assert.deepEqual(result, { messageId: prepared.messageId, accountId: "acct", intent: "draft", state: "CANCELLED", action: "cancelPrepared" });
+  assert.deepEqual(first.calls, []);
 });
 
 test("failed account health is generic and does not prevent listing", async () => {

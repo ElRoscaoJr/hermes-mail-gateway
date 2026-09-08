@@ -1,5 +1,12 @@
 # Development test points
 
+## Slice 7 — mailbox mutations and draft cancellation
+
+- Strict `mail_execute` mutation actions are account-scoped and limited to one UIDVALIDITY-bound reference.
+- Selectable-folder validation, mailbox locking, provider confirmation, safe normalized output, and audit append are covered by fake-provider and service tests.
+- No expunge or permanent delete operation exists; stale and cross-account references remain rejected by the adapter.
+- Explicit durable `intent:"draft"` and `cancelPrepared` are covered. Provider Drafts APPEND is intentionally deferred and no fake provider draft is created.
+
 ## Slice 1 — local durable foundation
 
 - Strict tool schemas reject unknown fields and invalid values.

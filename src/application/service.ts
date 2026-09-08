@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import { SafeError, type SafeResult } from "../errors.js";
 import type { AccountProjection, ForwardedAttachment } from "../domain/types.js";
-import type { ImapAdapter, SmtpAdapter, MailFolder, MailMessage, MailSummary } from "../mail/adapters.js";
+import type { ImapAdapter, SmtpAdapter, MailFolder, MailMessage, MailSummary, MailboxMutation } from "../mail/adapters.js";
 import { executeOnce } from "../mail/execute.js";
 import { prepareMessage } from "../mail/prepare.js";
 import { AccountRepository } from "../outbox/accounts.js";
@@ -11,7 +11,7 @@ import { mailAccountsSchema, mailExecuteSchema, mailPrepareSchema, mailQuerySche
 export type MailAccountsInput = z.infer<typeof mailAccountsSchema>;
 export type MailQueryInput = z.infer<typeof mailQuerySchema>;
 export type MailPrepareInput = z.input<typeof mailPrepareSchema>;
-export type MailExecuteInput = z.infer<typeof mailExecuteSchema>;
+export type MailExecuteInput = z.input<typeof mailExecuteSchema>;
 
 export interface ApplicationCallContext {
   readonly caller: "Hermes main";
@@ -215,6 +215,7 @@ export class MailGatewayService implements MailApplicationService {
     const prepared = await prepareMessage(this.outbox, this.accounts, {
       accountId: input.accountId,
       idempotencyKey: input.idempotencyKey,
+      intent: input.intent ?? "send",
       recipients: input.recipients,
       cc,
       bcc,
@@ -233,8 +234,31 @@ export class MailGatewayService implements MailApplicationService {
 
   async mailExecute(input: MailExecuteInput, context: ApplicationCallContext): Promise<unknown> {
     const account = accountOrThrow(this.accounts, input.accountId);
+    if (input.action !== undefined) {
+      const { imap } = adapterOrThrow(this.adapters, account.accountId);
+      if (input.action.type === "cancelPrepared") {
+        const message = this.outbox.get(input.action.messageId);
+        if (message.accountId !== account.accountId) throw new SafeError("ACCOUNT_NOT_FOUND", "Message was not found for this account.");
+        const cancelled = this.outbox.transition(message.messageId, "CANCELLED", "prepared message cancelled before provider submission");
+        this.outbox.appendAudit({ correlationId: context.correlationId, caller: context.caller, tool: "mail_execute", accountId: account.accountId, messageId: message.messageId, oldState: message.state, newState: cancelled.state, outcomeCode: "CANCELLED", metadata: { action: input.action.type } });
+        return { messageId: cancelled.messageId, accountId: cancelled.accountId, intent: cancelled.intent, state: cancelled.state, action: input.action.type };
+      }
+      if (!imap.mutate) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support mailbox mutations.");
+      let destinationFolder: string | undefined;
+      const action = input.action;
+      if (action.type === "move" || action.type === "copy") destinationFolder = action.destinationFolder;
+      if (action.type === "trash") destinationFolder = await this.specialFolder(imap, "\\Trash");
+      if (action.type === "restore") destinationFolder = account.inboxFolder;
+      if (destinationFolder !== undefined) await this.requireSelectableFolder(imap, destinationFolder);
+      const mutation: MailboxMutation = { type: action.type, messageReference: action.messageReference, ...(action.type === "addFlag" || action.type === "removeFlag" ? { flag: action.flag } : {}), ...(destinationFolder === undefined ? {} : { destinationFolder }) };
+      const result = await safeProviderCall(() => imap.mutate!(mutation));
+      this.outbox.appendAudit({ correlationId: context.correlationId, caller: context.caller, tool: "mail_execute", accountId: account.accountId, outcomeCode: "MAILBOX_MUTATION_CONFIRMED", metadata: { action: action.type, folder: result.folder, uid: result.uid } });
+      return { action: result.action, messageReference: result.reference, folder: result.folder, uid: result.uid, flags: result.flags };
+    }
+    if (input.messageId === undefined) throw new SafeError("INVALID_INPUT", "An execution messageId is required.");
     const message = this.outbox.get(input.messageId);
     if (message.accountId !== account.accountId) throw new SafeError("ACCOUNT_NOT_FOUND", "Message was not found for this account.");
+    if (message.intent === "draft") throw new SafeError("UNSUPPORTED_OPERATION", "Provider draft saving is not implemented for this prepared draft.");
     const { imap, smtp } = adapterOrThrow(this.adapters, account.accountId);
     if (input.verifyOnly) {
       const verified = await imap.verifySent(message.messageIdHeader);
@@ -250,5 +274,19 @@ export class MailGatewayService implements MailApplicationService {
       this.outbox.appendAudit({ correlationId: context.correlationId, caller: context.caller, tool: "mail_execute", accountId: account.accountId, messageId: message.messageId, outcomeCode: error instanceof SafeError ? error.code : "INTERNAL_SAFE_FAILURE", metadata: { verifyOnly: false } });
       throw error;
     }
+  }
+
+  private async requireSelectableFolder(imap: ImapAdapter, path: string): Promise<void> {
+    if (!imap.listFolders) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support folder discovery.");
+    const folders = safeFolders(await safeProviderCall(() => imap.listFolders!()));
+    if (!folders.some((folder) => folder.path === path)) throw new SafeError("INVALID_INPUT", "The destination folder is not a discovered selectable mailbox.");
+  }
+
+  private async specialFolder(imap: ImapAdapter, specialUse: string): Promise<string> {
+    if (!imap.listFolders) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support folder discovery.");
+    const folders = safeFolders(await safeProviderCall(() => imap.listFolders!()));
+    const folder = folders.find((item) => item.specialUse?.toLowerCase() === specialUse.toLowerCase());
+    if (!folder) throw new SafeError("UNSUPPORTED_OPERATION", "The provider did not expose the required special-use mailbox.");
+    return folder.path;
   }
 }

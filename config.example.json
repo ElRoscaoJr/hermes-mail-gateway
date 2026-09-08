@@ -19,7 +19,8 @@
         "/var/lib/hermes-mail-gateway-example/attachments"
       ],
       "inboxFolder": "INBOX",
-      "sentFolder": "Sent"
+      "sentFolder": "Sent",
+      "draftsFolder": "Drafts"
     },
     {
       "accountId": "example-secondary",
@@ -35,7 +36,8 @@
         "/var/lib/hermes-mail-gateway-example/attachments"
       ],
       "inboxFolder": "INBOX",
-      "sentFolder": "Sent"
+      "sentFolder": "Sent",
+      "draftsFolder": "Drafts"
     }
   ],
   "limits": {

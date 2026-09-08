@@ -7,6 +7,7 @@ const migrations = [
   { version: 1, sql: readFileSync(join(migrationDirectory, "001_initial.sql"), "utf8") },
   { version: 2, sql: readFileSync(join(migrationDirectory, "002_smtp_credential_ref.sql"), "utf8") },
   { version: 3, sql: readFileSync(join(migrationDirectory, "003_message_routing_metadata.sql"), "utf8") },
+  { version: 4, sql: readFileSync(join(migrationDirectory, "004_draft_intent.sql"), "utf8") },
 ] as const;
 
 function applyMigrations(db: Database.Database): void {

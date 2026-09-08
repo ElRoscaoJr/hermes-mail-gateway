@@ -9,6 +9,8 @@ The project has a strong provider-independent send core: durable raw MIME, idemp
 
 It is **not yet a complete production mail connector**. It is currently best described as a reliable multi-account send-and-query gateway. A production connector also needs safe mailbox mutations, drafts, stable mailbox identity across UIDVALIDITY changes, crash recovery, operational limits, authentication strategy, and a documented synchronization model.
 
+Update after the 2026-09-08 slice: safe single-message mailbox mutations and durable local draft preparation/cancellation are now implemented under the existing four-tool boundary. Provider-visible Drafts APPEND remains deliberately out of scope until durable append-outcome verification is implemented.
+
 The four-tool MCP boundary is still sufficient. Missing capabilities should be added as strict modes under the existing tools, not as one tool per feature or mailbox.
 
 ## Evidence and sources

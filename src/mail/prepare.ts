@@ -20,6 +20,7 @@ export async function prepareMessage(repo: OutboxRepository, accounts: AccountRe
     accountId: effectiveInput.accountId,
     idempotencyKey: effectiveInput.idempotencyKey,
     messageIdHeader: messageIdHeaderValue,
+    intent: effectiveInput.intent ?? "send",
     fromAddress: effectiveInput.fromAddress,
     recipients: effectiveInput.recipients,
     cc: effectiveInput.cc ?? [],

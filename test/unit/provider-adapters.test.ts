@@ -134,9 +134,9 @@ test("SMTP diagnostics are bounded and never include provider response text", as
 });
 
 const imapAccount: AccountProjection = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX-custom", sentFolder: "Archive/Sent-custom" };
-function imapFake(messages: Record<string, { uid: number; source?: Buffer; envelope?: MessageEnvelopeObject }>, searched: number[] | ((query: SearchObject) => number[]) = []): ImapFlowClient & { options?: unknown; mailbox: { uidValidity: bigint }; locks: string[]; searches: SearchObject[] } {
-  const state = { options: undefined as unknown, locks: [] as string[], searches: [] as SearchObject[] };
-  return { ...state, mailbox: { uidValidity: 1n }, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async (query) => { state.searches.push(query); return typeof searched === "function" ? searched(query) : searched; }, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() } : false; } };
+function imapFake(messages: Record<string, { uid: number; source?: Buffer; envelope?: MessageEnvelopeObject }>, searched: number[] | ((query: SearchObject) => number[]) = []): ImapFlowClient & { options?: unknown; mailbox: { uidValidity: bigint }; locks: string[]; searches: SearchObject[]; flags: Set<string> } {
+  const state = { options: undefined as unknown, locks: [] as string[], searches: [] as SearchObject[], flags: new Set<string>() };
+  return { ...state, mailbox: { uidValidity: 1n }, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async (query) => { state.searches.push(query); return typeof searched === "function" ? searched(query) : searched; }, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set(state.flags) }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set(state.flags) } : false; } };
 }
 
 test("IMAP adapter uses explicit folders, credentials, UID-safe references, and bounded reads", async () => {
@@ -271,4 +271,20 @@ test("IMAP adapter maps connection and credential failures safely", async () => 
   await assert.rejects(adapter.listFolders(), { code: "PROVIDER_UNAVAILABLE", message: "The IMAP provider is unavailable." });
   assert.equal(called, true);
   assert.throws(() => new ImapFlowMailAdapter({ account: { ...imapAccount, imapEndpoint: "https://imap.example.test" }, credentials: { get: async () => null } }), { code: "REFERENCE_INVALID" });
+});
+test("IMAP mailbox mutation uses UID mode, a mailbox lock, and provider confirmation", async () => {
+  const fake = imapFake({ "7": { uid: 7, source: Buffer.from("Subject: x\r\n\r\nbody") } }, [7]);
+  const calls: string[] = [];
+  fake.messageFlagsAdd = async (uid, flags, options) => { calls.push(`add:${uid}:${flags.join(",")}:${options?.uid}`); for (const flag of flags) fake.flags.add(flag); };
+  fake.list = async () => [
+    { path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true },
+    { path: "Archive", pathAsListed: "Archive", name: "Archive", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true },
+  ];
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  const reference = (await adapter.list("INBOX-custom", 1))[0]!.reference;
+  const result = await adapter.mutate({ type: "markRead", messageReference: reference });
+  assert.equal(result.action, "markRead");
+  assert.equal(result.uid, 7);
+  assert.deepEqual(calls, ["add:7:\\Seen:true"]);
+  assert.deepEqual(fake.locks, ["INBOX-custom", "INBOX-custom"]);
 });
