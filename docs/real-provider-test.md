@@ -15,7 +15,7 @@ Never use a customer, colleague, mailing list, forwarding address, or any other 
 2. Copy `config.example.json` to an external operator directory. Replace only the synthetic provider endpoints, sender addresses, folders, keychain references, and paths with values belonging to the operator. Keep the file outside this repository and do not commit it.
 3. Set `databasePath` to a newly created disposable database path. Do not point it at a production database or an existing gateway database.
 4. Set `attachmentRoots` and both accounts' `allowedAttachmentRoots` to a disposable directory containing no confidential files. Create one harmless, non-sensitive text fixture there and record its byte size and SHA-256 locally.
-5. Ensure the selected account's `allowedSender` is the operator's self-test mailbox and that its `sentFolder` is the provider's actual Sent folder. Set `sentPolicy` according to the provider's documented behavior; do not add a gateway append policy without a separate, deliberate test.
+5. Ensure the selected account's `allowedSender` is the operator's self-test mailbox and that its `sentFolder` is the provider's actual Sent folder. Use `sentPolicy: "provider_managed"`; IMAP APPEND is not implemented.
 6. Create the keychain entries referenced by the external configuration. Store the provider username and password/app-password in the host keychain only. For a new entry, run the repository helper from an interactive terminal, supplying only the non-secret service and account values as arguments; it prompts for the password without echoing it:
 
    ```sh
@@ -38,10 +38,16 @@ Never use a customer, colleague, mailing list, forwarding address, or any other 
 3. Call `mail_query` first, before preparing anything:
 
    ```json
+   {"accountId":"<configured-account-id>","operation":"folders","limit":5}
+   ```
+
+   Record only the safe folder metadata needed for the read-only check. Then list the configured inbox:
+
+   ```json
    {"accountId":"<configured-account-id>","operation":"list","folder":"<configured-inbox-folder>","limit":5}
    ```
 
-4. Confirm that the configured inbox folder is reachable and that the result is bounded. If the folder is wrong, the account is wrong, or the provider is unavailable, stop. Do not prepare or execute a message.
+4. Confirm that folder discovery and the configured inbox are reachable and that the result is bounded. If the folder is wrong, the account is wrong, or the provider is unavailable, stop. Do not prepare or execute a message. Any other real provider folder may be used for an explicitly approved read-only list/search check.
 5. Confirm the configured Sent folder and provider-managed/gateway-append policy from the external operator configuration. Do not infer them from a subject, timestamp, or SMTP acknowledgement.
 
 ## 3. Prepare one message (repeat only as separately reviewed, idempotent messages)

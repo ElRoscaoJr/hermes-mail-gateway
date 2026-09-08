@@ -22,9 +22,15 @@ function publicValue(value: unknown): unknown {
   if (Buffer.isBuffer(value)) return "[BINARY_OMITTED]";
   if (Array.isArray(value)) return value.map(publicValue);
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).filter(([key]) => !["bcc", "content", "rawmime", "raw_mime"].includes(key.toLowerCase())).map(([key, item]) => [key, publicValue(item)]));
+    return Object.fromEntries(Object.entries(value).filter(([key]) => !["bcc", "content", "rawmime", "raw_mime"].includes(key.toLowerCase())).map(([key, item]) => [key, key === "folders" && Array.isArray(item) ? item.map((folder) => publicFolder(folder)) : publicValue(item)]));
   }
   return value;
+}
+
+function publicFolder(value: unknown): unknown {
+  if (!value || typeof value !== "object") return undefined;
+  const folder = value as Record<string, unknown>;
+  return Object.fromEntries(["path", "name", "delimiter", "specialUse"].filter((key) => typeof folder[key] === "string").map((key) => [key, folder[key]]));
 }
 
 function jsonContent(value: unknown): { type: "text"; text: string } {

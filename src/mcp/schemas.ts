@@ -3,9 +3,9 @@ const id = z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 const headerText = (max: number) => z.string().max(max).refine((value) => !/[\r\n]/.test(value), "Header values may not contain line breaks.");
 const messageIdHeader = z.string().regex(/^<[^<>\r\n]+>$/).max(998);
 const recipientList = z.array(z.string().email()).max(100).default([]);
-const queryOperation = z.enum(["list", "search", "read", "thread", "attachments", "verifySent"]);
+const queryOperation = z.enum(["folders", "list", "search", "read", "thread", "attachments", "verifySent"]);
 export const mailAccountsSchema = z.strictObject({ includeHealth: z.boolean().default(true) });
-export const mailQuerySchema = z.strictObject({ accountId: id, operation: queryOperation, folder: z.string().max(200).optional(), query: z.string().max(1000).optional(), messageReference: id.optional(), cursor: z.string().max(500).optional(), limit: z.number().int().min(1).max(100).default(20) });
+export const mailQuerySchema = z.strictObject({ accountId: id, operation: queryOperation, folder: z.string().min(1).max(200).optional(), query: z.string().max(1000).optional(), messageReference: z.union([id, messageIdHeader]).optional(), cursor: z.string().max(500).optional(), limit: z.number().int().min(1).max(100).default(20) });
 export const mailPrepareSchema = z.strictObject({
   accountId: id,
   idempotencyKey: z.string().min(8).max(200),

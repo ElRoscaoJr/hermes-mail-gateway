@@ -7,15 +7,17 @@ import type { CredentialResolver } from "./credentials.js";
 
 export interface ImapAdapter {
   verifySent(messageIdHeader: string): Promise<boolean>;
-  list?(folder: string, limit?: number): Promise<readonly MailSummary[]>;
-  search?(folder: string, query: string, limit?: number): Promise<readonly MailSummary[]>;
+  listFolders?(): Promise<readonly MailFolder[]>;
+  checkConnectivity?(): Promise<void>;
+  list?(folder: string, limit?: number, afterUid?: number): Promise<readonly MailSummary[]>;
+  search?(folder: string, query: string, limit?: number, afterUid?: number): Promise<readonly MailSummary[]>;
   read?(reference: string): Promise<MailMessage>;
   thread?(folder: string, anchorReference: string, limit?: number): Promise<readonly MailSummary[]>;
 }
 export type SmtpOutcome = "ACKNOWLEDGED" | "REJECTED" | "PRE_SUBMISSION_FAILURE" | "UNKNOWN";
 export interface SmtpEnvelope { readonly from: string; readonly to: readonly string[]; readonly cc: readonly string[]; readonly bcc: readonly string[]; }
 export interface SmtpSubmissionResult { readonly outcome: SmtpOutcome; /** Bounded operator evidence; never a provider transcript or message data. */ readonly evidence: string; }
-export interface SmtpAdapter { submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome | SmtpSubmissionResult>; }
+export interface SmtpAdapter { submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpOutcome | SmtpSubmissionResult>; verify?(): Promise<void>; }
 
 export interface NodemailerSmtpOptions {
   readonly host: string;
@@ -23,8 +25,8 @@ export interface NodemailerSmtpOptions {
   readonly secure: boolean;
   readonly credentialRef: string;
   readonly credentials: CredentialResolver;
-  readonly transport?: Pick<ReturnType<typeof nodemailer.createTransport>, "sendMail">;
-  readonly transportFactory?: (options: Parameters<typeof nodemailer.createTransport>[0]) => Pick<ReturnType<typeof nodemailer.createTransport>, "sendMail">;
+  readonly transport?: Pick<ReturnType<typeof nodemailer.createTransport>, "sendMail"> & { verify?: () => Promise<unknown> };
+  readonly transportFactory?: (options: Parameters<typeof nodemailer.createTransport>[0]) => Pick<ReturnType<typeof nodemailer.createTransport>, "sendMail"> & { verify?: () => Promise<unknown> };
 }
 
 type MailError = { code?: string; command?: string; responseCode?: number; response?: string; rejected?: unknown[] };
@@ -58,7 +60,7 @@ function errorEvidence(error: MailError): string {
 
 /** Nodemailer SMTP adapter. It never retries and never emits message content. */
 export class NodemailerSmtpAdapter implements SmtpAdapter {
-  private readonly transport: Pick<ReturnType<typeof nodemailer.createTransport>, "sendMail"> | undefined;
+  private readonly transport: (Pick<ReturnType<typeof nodemailer.createTransport>, "sendMail"> & { verify?: () => Promise<unknown> }) | undefined;
   constructor(private readonly options: NodemailerSmtpOptions) { this.transport = options.transport; }
 
   async submit(_messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpSubmissionResult> {
@@ -82,9 +84,19 @@ export class NodemailerSmtpAdapter implements SmtpAdapter {
       return { outcome: "UNKNOWN", evidence: errorEvidence(mailError) };
     }
   }
+
+  async verify(): Promise<void> {
+    const credential = await this.options.credentials.get(this.options.credentialRef);
+    if (!credential) throw new SafeError("PROVIDER_UNAVAILABLE", "The SMTP provider is unavailable.");
+    const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, auth: { user: credential.username, pass: credential.password } };
+    const transport = this.transport ?? (this.options.transportFactory ? this.options.transportFactory(transportOptions) : nodemailer.createTransport(transportOptions));
+    const verifiedTransport = transport as typeof transport & { verify?: () => Promise<unknown> };
+    if (!verifiedTransport.verify) throw new SafeError("PROVIDER_UNAVAILABLE", "The SMTP provider is unavailable.");
+    await verifiedTransport.verify();
+  }
 }
 
-export class FakeSmtpAdapter implements SmtpAdapter { readonly submissions: Array<{ messageIdHeader: string; mime: Buffer; envelope: SmtpEnvelope }> = []; constructor(private readonly outcome: SmtpOutcome = "ACKNOWLEDGED") {} async submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpSubmissionResult> { this.submissions.push({ messageIdHeader, mime, envelope: { from: envelope.from, to: [...envelope.to], cc: [...envelope.cc], bcc: [...envelope.bcc] } }); return { outcome: this.outcome, evidence: `fake:${this.outcome.toLowerCase()}` }; } }
+export class FakeSmtpAdapter implements SmtpAdapter { readonly submissions: Array<{ messageIdHeader: string; mime: Buffer; envelope: SmtpEnvelope }> = []; constructor(private readonly outcome: SmtpOutcome = "ACKNOWLEDGED") {} async submit(messageIdHeader: string, mime: Buffer, envelope: SmtpEnvelope): Promise<SmtpSubmissionResult> { this.submissions.push({ messageIdHeader, mime, envelope: { from: envelope.from, to: [...envelope.to], cc: [...envelope.cc], bcc: [...envelope.bcc] } }); return { outcome: this.outcome, evidence: `fake:${this.outcome.toLowerCase()}` }; } async verify(): Promise<void> {} }
 export class FakeImapAdapter implements ImapAdapter { constructor(private readonly verified = new Set<string>()) {} async verifySent(messageIdHeader: string): Promise<boolean> { return this.verified.has(messageIdHeader); } }
 
 export interface MailFolder { readonly path: string; readonly name: string; readonly delimiter: string; readonly specialUse?: string; }
@@ -140,27 +152,31 @@ export class ImapFlowMailAdapter implements ImapAdapter {
   private readonly factory: ImapFlowClientFactory;
   private readonly maxResults: number;
   private readonly maxReadBytes: number;
-  constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 100); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 1_000_000, 1), 10_000_000); }
+  constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 101); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 1_000_000, 1), 10_000_000); }
 
   private async withClient<T>(operation: (client: ImapFlowClient) => Promise<T>): Promise<T> {
     let client: ImapFlowClient | undefined;
     try { const credential = await this.options.credentials.get(this.options.account.credentialRef); if (!credential) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider is unavailable."); client = this.factory({ ...this.endpoint, auth: { user: credential.username, pass: credential.password }, logger: false }); await client.connect(); return await operation(client); } catch (error) { return mapError(error); } finally { if (client) { try { await client.logout(); } catch { /* close below */ } client.close(); } }
   }
 
-  async listFolders(): Promise<readonly MailFolder[]> { return this.withClient(async (client) => (await client.list()).map((folder) => ({ path: folder.path, name: folder.name, delimiter: folder.delimiter, ...(folder.specialUse === undefined ? {} : { specialUse: folder.specialUse }) }))); }
+  async listFolders(): Promise<readonly MailFolder[]> { return this.withClient(async (client) => (await client.list()).filter((folder) => !folder.flags?.has("\\Noselect") && !folder.flags?.has("\\NOSELECT")).map((folder) => ({ path: folder.path, name: folder.name, delimiter: folder.delimiter, ...(folder.specialUse === undefined ? {} : { specialUse: folder.specialUse }) }))); }
 
-  async listMessages(folder: string, query?: string, limit = this.maxResults): Promise<readonly MailSummary[]> {
+  async checkConnectivity(): Promise<void> { await this.withClient(async () => undefined); }
+
+  async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number): Promise<readonly MailSummary[]> {
     const bounded = Math.min(Math.max(limit, 1), this.maxResults);
-    return this.withClient(async (client) => { const lock = await client.getMailboxLock(folder); try { const search: SearchObject = query ? { or: [{ text: query }, { subject: query }, { header: { Subject: query } }] } : { all: true }; const found = await client.search(search, { uid: true }); const uids = (Array.isArray(found) ? found : []).slice(0, bounded); const result: MailSummary[] = []; for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) result.push(this.summary(folder, message)); return result.slice(0, bounded); } finally { lock.release(); } });
+    return this.withClient(async (client) => { const lock = await client.getMailboxLock(folder); try { const base: SearchObject = query ? { or: [{ text: query }, { subject: query }, { header: { Subject: query } }] } : { all: true }; const search: SearchObject = afterUid === undefined ? base : { ...base, uid: `${afterUid + 1}:*` }; const found = await client.search(search, { uid: true }); const uids = (Array.isArray(found) ? found : []).slice(0, bounded); const result: MailSummary[] = []; for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) result.push(this.summary(folder, message)); return result.slice(0, bounded); } finally { lock.release(); } });
   }
 
-  async list(folder: string, limit = this.maxResults): Promise<readonly MailSummary[]> { return this.listMessages(folder, undefined, limit); }
-  async search(folder: string, query: string, limit = this.maxResults): Promise<readonly MailSummary[]> { return this.listMessages(folder, query, limit); }
+  async list(folder: string, limit = this.maxResults, afterUid?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, undefined, limit, afterUid); }
+  async search(folder: string, query: string, limit = this.maxResults, afterUid?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, query, limit, afterUid); }
 
   async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true }); if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); const parsed = await simpleParser(message.source); const summary = this.summary(target.folder, message); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item) => ({ ...(item.filename === undefined ? {} : { filename: item.filename }), ...(item.contentType === undefined ? {} : { contentType: item.contentType }), ...(item.size === undefined ? {} : { size: item.size }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
 
   async thread(folder: string, anchorReference: string, limit = this.maxResults): Promise<readonly MailSummary[]> {
     const bounded = Math.min(Math.max(limit, 1), this.maxResults);
+    const target = decodeReference(anchorReference, this.options.account.accountId);
+    if (target.folder !== folder) throw new SafeError("INVALID_INPUT", "Thread folder does not match message reference folder.");
     const anchor = await this.read(anchorReference);
     const ids = [...new Set([anchor.messageId, anchor.inReplyTo, ...(anchor.references ?? [])].filter((value): value is string => typeof value === "string" && /^<[^<>\r\n]+>$/.test(value)))].slice(0, 100);
     if (ids.length === 0) return [anchor].slice(0, bounded);

@@ -4,7 +4,7 @@
 |---|---|---|
 | Four MCP input schemas | `src/mcp/schemas.ts` | Strict schemas for `mail_accounts`, `mail_query`, `mail_prepare`, and `mail_execute`. |
 | `MailApplicationService` | `src/application/service.ts` | Provider-free four-operation application seam and per-call context. |
-| `MailGatewayService` | `src/application/service.ts` | Account-scoped application wiring for safe projections, bounded mailbox queries, durable preparation, verification-only execution, and SMTP execution. |
+| `MailGatewayService` | `src/application/service.ts` | Account-scoped application wiring for safe projections, optional generic provider health, bounded cursor mailbox queries, durable preparation, verification-only execution, and SMTP execution. |
 | `createMcpServer(service)` | `src/mcp/server.ts` | Exactly four strict, redacting MCP tools with safe error mapping. |
 | `startStdio(service)` | `src/stdio.ts` | SDK stdio composition entrypoint; stdout is protocol-only. |
 | Runtime composition/configuration | `src/runtime.ts`, `src/main.ts` | Explicit JSON configuration, account-scoped adapter construction, fail-closed startup, and executable stdio process. |
@@ -16,9 +16,9 @@
 | Redaction | `src/observability/redaction.ts` | Recursive secret and bearer-token redaction. |
 | Provider-free adapters | `src/mail/adapters.ts` | IMAP/SMTP contracts, typed SMTP envelope, and deterministic test fakes. |
 | Safe mailbox projection | `src/mail/adapters.ts` | Account-bound opaque references, visible CC, bounded reply metadata, and selected Hermes forwarding headers; no Bcc, arbitrary headers, raw MIME, or public attachment bytes. |
-| `ImapFlowMailAdapter` | `src/mail/adapters.ts` | Provider-independent, per-operation ImapFlow 2.0.0 client lifecycle for explicit-folder listing, bounded UID-safe text/subject/header search, reads, opaque references, and exact configured-Sent Message-ID verification. |
+| `ImapFlowMailAdapter` | `src/mail/adapters.ts` | Provider-independent, per-operation ImapFlow 2.0.0 client lifecycle for no-send connectivity checks, explicit-folder listing/search with server-side UID cursors, reads, opaque references, and exact configured-Sent Message-ID verification. |
 | Preparation/execution | `src/mail/prepare.ts`, `src/mail/execute.ts` | MIME is built before persistence; execution submits stored bytes once with stable Message-ID and no-retry unknown outcomes. |
 | Credential reference parser/store | `src/mail/credentials.ts` | Validates explicit `keychain:<service>/<account>` references and resolves credentials without MCP exposure. |
 | MIME builder | `src/mail/mime.ts` | Nodemailer 10.0.1 stream MIME generation for text, optional HTML, and hash/size-validated attachments. |
-| Nodemailer SMTP adapter | `src/mail/adapters.ts` | Injected-transport submission of persisted raw MIME with an explicit typed `{ from, to, cc, bcc }` envelope; rejected, pre-submission, acknowledged, and unknown outcomes; no internal retry. |
+| Nodemailer SMTP adapter | `src/mail/adapters.ts` | No-send `transport.verify()` health checks plus injected-transport submission of persisted raw MIME with an explicit typed envelope; no internal retry. |
 | `UNSUPPORTED_OPERATION` | `src/errors.ts` | Safe error for capabilities not implemented by a configured adapter or explicitly unsupported operations such as forwarding from unavailable attachment bytes. |

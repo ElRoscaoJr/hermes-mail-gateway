@@ -10,7 +10,7 @@ test("MCP exposes exactly four tools and rejects invalid public input", async ()
   const calls: string[] = [];
   const service: MailApplicationService = {
     mailAccounts: () => ({ accounts: [{ accountId: "acct", credentialRef: "keychain:private" }] }),
-    mailQuery: (input) => input.operation === "attachments" ? { attachments: [{ filename: "secret.bin", contentType: "application/octet-stream", size: 14, content: Buffer.from("attachment bytes") }], rawMime: Buffer.from("raw mime") } : { messages: [] },
+    mailQuery: (input) => input.operation === "folders" ? { folders: [{ path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All", rawProviderResponse: "password=must-not-escape" }] } : input.operation === "attachments" ? { attachments: [{ filename: "secret.bin", contentType: "application/octet-stream", size: 14, content: Buffer.from("attachment bytes") }], rawMime: Buffer.from("raw mime") } : { messages: [] },
     mailPrepare: (input) => { calls.push(`prepare:${input.accountId}`); return { state: "PREPARED", accountId: input.accountId, bcc: ["hidden@example.test"], attachments: [{ filename: "secret.bin", content: Buffer.from("attachment bytes") }], rawMime: Buffer.from("From: secret@example.test\r\n\r\nbody") }; },
     mailExecute: (input) => {
       if (input.accountId !== "acct") throw new SafeError("ACCOUNT_NOT_FOUND", "Account was not found.");
@@ -41,6 +41,11 @@ test("MCP exposes exactly four tools and rejects invalid public input", async ()
 
   const attachments = await client.callTool({ name: "mail_query", arguments: { accountId: "acct", operation: "attachments", messageReference: "opaque-ref" } });
   assert.doesNotMatch(JSON.stringify(attachments.structuredContent), /attachment bytes|raw mime|"content":/i);
+
+  const folders = await client.callTool({ name: "mail_query", arguments: { accountId: "acct", operation: "folders" } });
+  assert.equal(folders.isError, undefined);
+  assert.deepEqual((folders.structuredContent as { value: { folders: unknown[] } }).value.folders, [{ path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All" }]);
+  assert.doesNotMatch(JSON.stringify(folders.structuredContent), /rawProviderResponse|password=must-not-escape/i);
 
   const execute = await client.callTool({ name: "mail_execute", arguments: { accountId: "acct", messageId: "message", verifyOnly: true } });
   assert.equal(execute.isError, undefined);

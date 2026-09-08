@@ -19,11 +19,11 @@ test("runtime requires an explicit configuration path and rejects duplicate acco
   assert.throws(() => loadServerConfig(file), { code: "CONFIGURATION_INVALID" });
 });
 
-test("runtime composes multiple account projections without contacting providers", () => {
+test("runtime composes multiple account projections without contacting providers", async () => {
   const dir = mkdtempSync(join(tmpdir(), "hermes-runtime-"));
   const runtime = createRuntime(config(join(dir, "mail.db"), dir), { credentials: { get: async () => ({ username: "synthetic", password: "synthetic" }) } });
   try {
-    const result = runtime.service.mailAccounts({ includeHealth: true });
+    const result = await runtime.service.mailAccounts({ includeHealth: false });
     assert.deepEqual(result.accounts.map((account) => account.accountId), ["first", "second"]);
     assert.doesNotMatch(JSON.stringify(result), /keychain|localhost|synthetic|credential/i);
   } finally { runtime.close(); }

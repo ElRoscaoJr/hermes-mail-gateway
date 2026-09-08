@@ -83,6 +83,15 @@ test("SMTP adapter passes the explicit envelope with raw MIME", async () => {
   assert.deepEqual(options, { raw: Buffer.from("stored raw MIME"), envelope: { from: "sender@example.test", to: ["recipient@example.test"], cc: [], bcc: [] } });
 });
 
+test("SMTP health verification uses transport.verify and never sends", async () => {
+  let verified = 0;
+  let sent = 0;
+  const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transport: { sendMail: async () => { sent += 1; return { message: Buffer.alloc(0) }; }, verify: async () => { verified += 1; } } });
+  await smtp.verify();
+  assert.equal(verified, 1);
+  assert.equal(sent, 0);
+});
+
 test("SMTP adapter resolves its independent credential reference", async () => {
   let requested: string | undefined;
   const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async (reference) => { requested = reference; return { username: "user", password: "secret" }; } }, transport: { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }) } });
@@ -159,11 +168,27 @@ test("IMAP adapter uses explicit folders, credentials, UID-safe references, and 
   assert.equal((await adapter.listFolders())[0]?.path, "INBOX-custom");
 });
 
+test("IMAP folder discovery excludes non-selectable namespaces", async () => {
+  const fake = imapFake({}, []);
+  fake.list = async () => [
+    { path: "[Gmail]", pathAsListed: "[Gmail]", name: "[Gmail]", delimiter: "/", parent: [], parentPath: "", flags: new Set(["\\Noselect"]), listed: true, subscribed: true },
+    { path: "[Gmail]/Spam", pathAsListed: "[Gmail]/Spam", name: "Spam", delimiter: "/", parent: ["[Gmail]"], parentPath: "[Gmail]", flags: new Set<string>(), specialUse: "\\Junk", listed: true, subscribed: true },
+  ];
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  assert.deepEqual(await adapter.listFolders(), [{ path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "\\Junk" }]);
+});
 test("IMAP list without a query remains an all-message search", async () => {
   const fake = imapFake({ "7": { uid: 7, envelope: { subject: "Synthetic" } } }, [7]);
   const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
   await adapter.list("INBOX-custom", 1);
   assert.deepEqual(fake.searches, [{ all: true }]);
+});
+
+test("IMAP pagination applies the cursor as a server-side UID criterion", async () => {
+  const fake = imapFake({ "8": { uid: 8, envelope: { subject: "Synthetic" } } }, [8]);
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.list("INBOX-custom", 1, 7);
+  assert.deepEqual(fake.searches, [{ all: true, uid: "8:*" }]);
 });
 
 test("IMAP references are bound to the account that issued them", async () => {
@@ -216,6 +241,14 @@ test("IMAP thread search uses server-side header criteria, includes the anchor, 
     { header: { "Message-ID": "<parent@example.test>" } }, { header: { "In-Reply-To": "<parent@example.test>" } }, { header: { References: "<parent@example.test>" } },
     { header: { "Message-ID": "<root@example.test>" } }, { header: { "In-Reply-To": "<root@example.test>" } }, { header: { References: "<root@example.test>" } },
   ]);
+});
+
+test("IMAP thread rejects a folder mismatch before searching the wrong mailbox", async () => {
+  const fake = imapFake({ "7": { uid: 7, source: Buffer.from("Subject: Anchor\r\n\r\nbody"), envelope: { messageId: "<anchor@example.test>" } } }, [7]);
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  const reference = Buffer.from(JSON.stringify({ accountId: "acct", folder: "INBOX-custom", uid: 7 }), "utf8").toString("base64url");
+  await assert.rejects(adapter.thread("Archive/Other", reference, 1), { code: "INVALID_INPUT", message: "Thread folder does not match message reference folder." });
+  assert.deepEqual(fake.locks, []);
 });
 
 test("IMAP adapter maps connection and credential failures safely", async () => {

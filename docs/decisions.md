@@ -71,3 +71,17 @@
 - Why: Reproducible builds and explicit dependency review are release requirements for an email-capable service.
 - Alternatives rejected: Floating `latest` ranges and runtime downloads.
 - Supersedes: none
+
+## D-011 — Provider-managed Sent and bounded query health
+- Date / phase: 2026-09-08 / Phase 5
+- Decision: Active configuration accepts only `provider_managed`; account health is opt-in at the call boundary and uses no-send IMAP connectivity plus SMTP transport verification; list/search pagination uses scoped opaque UID cursors.
+- Why: IMAP APPEND is not implemented, provider diagnostics must not cross the public boundary, and mailbox queries must remain bounded and account-safe.
+- Alternatives rejected: Retaining `gateway_append`; exposing provider errors; unbounded mailbox scans or client-only pagination.
+- Supersedes: D-009 only for Sent policy wording; D-009's no-duplicate and no-retry reliability contract remains unchanged.
+
+## D-012 — Provider-authoritative mailbox folders
+- Date / phase: 2026-09-08 / Phase 5
+- Decision: Expose one `folders` operation within `mail_query` for safe provider folder metadata. List/search accept any real provider folder or the configured inbox default; read/attachments use the folder encoded in the account-bound reference; thread requires an anchor-folder match; `verifySent` remains configured-Sent bound.
+- Why: Mailboxes commonly contain user-created folders beyond Inbox and Sent, while opaque references and explicit thread checks preserve account and mailbox routing safety.
+- Alternatives rejected: Maintaining a static Inbox/Sent-only service allow-list; exposing raw provider folder responses.
+- Supersedes: none

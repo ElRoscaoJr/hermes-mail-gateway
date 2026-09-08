@@ -115,7 +115,7 @@ The source tree implements this map; runtime composition is provided by `src/run
 3. **Account boundary:** `accountId` maps only to operator-configured account records. A caller cannot supply an endpoint or credential reference.
 4. **Filesystem boundary:** attachment paths are canonicalized and confined to configured roots; hashes are checked at prepare and execute.
 5. **Secret boundary:** keychain/Secret Service is the only credential source. Secrets never enter tool output, SQLite, logs, fixtures, or repository files.
-6. **Mailbox boundary:** only allow-listed folders and operations are exposed; permanent deletion and arbitrary commands are excluded.
+6. **Mailbox boundary:** only bounded, parameterized operations are exposed; folder paths are discovered from the authenticated provider or taken from account defaults, while permanent deletion and arbitrary commands are excluded.
 7. **Send boundary:** no SMTP submission before durable preparation; exact immutable MIME and Message-ID are used; ambiguous outcomes halt.
 8. **Observability boundary:** logs and audit data are redacted and permission-restricted; diagnostic detail is operator-only.
 
@@ -148,7 +148,7 @@ Test points:
 - All allowed and forbidden outbox transitions, concurrent execution claims, restart recovery, and migration failures.
 - MIME determinism, preassigned Message-ID, reply headers, attachment hashes, size limits, and provider Sent policy.
 - SMTP outcome classification for definitive reject, pre-submit failure, post-submit ambiguity, and acknowledged submission.
-- Exact Message-ID verification, no duplicate gateway append for Gmail/Zoho, and blocked ambiguous recovery.
+- Exact Message-ID verification, provider-managed Sent copies, and blocked ambiguous recovery; gateway-side IMAP APPEND is not implemented.
 - Credential absence, database lock/corruption, provider timeout, malformed mailbox data, and safe error mapping.
 - Self-only real-provider tests, if configured, limited to the operator-controlled recipient outside the repository.
 

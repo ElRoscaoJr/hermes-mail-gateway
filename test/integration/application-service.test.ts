@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fixture } from "../helpers.js";
 import { MailGatewayService } from "../../src/application/service.js";
-import { FakeSmtpAdapter, type ImapAdapter, type MailMessage, type MailSummary } from "../../src/mail/adapters.js";
+import { FakeSmtpAdapter, type ImapAdapter, type MailFolder, type MailMessage, type MailSummary } from "../../src/mail/adapters.js";
 import { SafeError } from "../../src/errors.js";
 
 function message(folder: string, reference: string, subject: string): MailSummary {
@@ -14,9 +14,11 @@ class FakeMailboxAdapter implements ImapAdapter {
   constructor(private readonly label: string, private readonly verified = true, private readonly source?: Partial<MailMessage>) {}
   async list(folder: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`list:${folder}:${limit}`); return [message(folder, `${this.label}-list`, this.label)]; }
   async search(folder: string, query: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`search:${folder}:${query}:${limit}`); return [message(folder, `${this.label}-search`, query)]; }
+  async listFolders(): Promise<readonly MailFolder[]> { this.calls.push("folders"); return [{ path: "Inbox", name: "Inbox", delimiter: "/" }, { path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All" }]; }
   async read(reference: string): Promise<MailMessage> { this.calls.push(`read:${reference}`); return { ...message("Inbox", reference, this.label), text: `safe body ${this.label}`, attachments: [], ...this.source }; }
   async thread(folder: string, reference: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`thread:${folder}:${reference}:${limit}`); return [message(folder, `${this.label}-thread`, "thread subject")]; }
   async verifySent(messageIdHeader: string): Promise<boolean> { this.calls.push(`verify:${messageIdHeader}`); return this.verified; }
+  async checkConnectivity(): Promise<void> { this.calls.push("health:imap"); }
 }
 
 function serviceFixture() {
@@ -35,23 +37,78 @@ function serviceFixture() {
 
 const context = { caller: "Hermes main" as const, correlationId: "corr-service" };
 
-test("mailAccounts returns only safe account projections", () => {
+test("mailAccounts returns safe projections and provider health", async () => {
   const { service } = serviceFixture();
-  const result = service.mailAccounts({ includeHealth: true });
+  const result = await service.mailAccounts({ includeHealth: true });
   assert.deepEqual(result.accounts.map((account) => account.accountId), ["acct", "other"]);
   const serialized = JSON.stringify(result);
   assert.doesNotMatch(serialized, /credentialRef|keychain|imapEndpoint|smtpEndpoint|password|auth/i);
-  assert.deepEqual(result.accounts[0], { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", allowedSender: "sender@example.test", enabled: true });
+  assert.deepEqual(result.accounts[0], { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", allowedSender: "sender@example.test", enabled: true, health: { status: "ok" } });
 });
 
-test("mailQuery dispatches all supported operations to the account-scoped mailbox adapter", async () => {
+test("mailAccounts skips all provider calls when health is disabled", async () => {
+  const { service, first, second } = serviceFixture();
+  const result = await service.mailAccounts({ includeHealth: false });
+  assert.equal(result.accounts.some((account) => "health" in account), false);
+  assert.deepEqual(first.calls, []);
+  assert.deepEqual(second.calls, []);
+});
+
+test("failed account health is generic and does not prevent listing", async () => {
+  const base = fixture();
+  const imap: ImapAdapter = {
+    verifySent: async () => false,
+    checkConnectivity: async () => { throw new Error("provider password and transcript must not escape"); },
+    list: async (folder) => [message(folder, "safe-ref", "safe")],
+  };
+  const smtp: FakeSmtpAdapter = new FakeSmtpAdapter();
+  smtp.verify = async () => { throw new Error("smtp diagnostic must not escape"); };
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp }]]));
+  const accounts = await service.mailAccounts({ includeHealth: true });
+  assert.deepEqual(accounts.accounts[0]?.health, { status: "failed" });
+  assert.doesNotMatch(JSON.stringify(accounts), /provider password|transcript|smtp diagnostic|credential|keychain/i);
+  assert.equal((await service.mailQuery({ accountId: "acct", operation: "list", limit: 1 }, context) as { messages: unknown[] }).messages.length, 1);
+});
+
+test("mailQuery list uses an opaque bounded cursor and rejects scope reuse", async () => {
+  const base = fixture();
+  base.accounts.upsert({ accountId: "other", displayName: "Other", providerKind: "gmail", imapEndpoint: "imaps://other.example.test", smtpEndpoint: "smtps://other.example.test", credentialRef: "keychain:private/other", sentPolicy: "provider_managed", enabled: true, allowedSender: "other@example.test", allowedAttachmentRoots: [base.dir], inboxFolder: "INBOX", sentFolder: "Sent" });
+  const all = [1, 2, 3].map((uid) => ({ ...message("Inbox", `ref-${uid}`, `subject-${uid}`), uid }));
+  const imap: ImapAdapter = {
+    verifySent: async () => false,
+    list: async (_folder, limit = 100, afterUid) => all.filter((item) => afterUid === undefined || item.uid > afterUid).slice(0, limit),
+  };
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }], ["other", { imap, smtp: new FakeSmtpAdapter() }]]));
+  const first = await service.mailQuery({ accountId: "acct", operation: "list", limit: 2 }, context) as { messages: MailSummary[]; hasMore: boolean; nextCursor?: string };
+  assert.deepEqual(first.messages.map((item) => item.uid), [1, 2]);
+  assert.equal(first.hasMore, true);
+  assert.ok(first.nextCursor);
+  const second = await service.mailQuery({ accountId: "acct", operation: "list", cursor: first.nextCursor, limit: 2 }, context) as { messages: MailSummary[]; hasMore: boolean };
+  assert.deepEqual(second.messages.map((item) => item.uid), [3]);
+  assert.equal(second.hasMore, false);
+  await assert.rejects(service.mailQuery({ accountId: "other", operation: "list", cursor: first.nextCursor, limit: 2 }, context), { code: "INVALID_INPUT" });
+  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "search", query: "x", cursor: first.nextCursor, limit: 2 }, context), { code: "INVALID_INPUT" });
+  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "list", cursor: "not-a-cursor", limit: 2 }, context), { code: "INVALID_INPUT" });
+});
+
+test("mailQuery discovers safe folders and routes arbitrary folders to the account adapter", async () => {
+  const { service, first, second } = serviceFixture();
+  const folders = await service.mailQuery({ accountId: "acct", operation: "folders", limit: 1 }, context);
+  assert.deepEqual(folders, { folders: [{ path: "Inbox", name: "Inbox", delimiter: "/" }, { path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All" }] });
+  await service.mailQuery({ accountId: "acct", operation: "list", folder: "Archive/Receipts", limit: 1 }, context);
+  await service.mailQuery({ accountId: "acct", operation: "search", folder: "Archive/Receipts", query: "invoice", limit: 3 }, context);
+  assert.deepEqual(first.calls.slice(0, 3), ["folders", "list:Archive/Receipts:2", "search:Archive/Receipts:invoice:4"]);
+  assert.deepEqual(second.calls, []);
+});
+
+test("mailQuery dispatches supported operations to the account-scoped mailbox adapter", async () => {
   const { service, first, second } = serviceFixture();
   await service.mailQuery({ accountId: "acct", operation: "list", limit: 200 }, context);
   await service.mailQuery({ accountId: "acct", operation: "search", query: "invoice", limit: 3 }, context);
   await service.mailQuery({ accountId: "acct", operation: "read", messageReference: "ref-1", limit: 1 }, context);
   const verified = await service.mailQuery({ accountId: "other", operation: "verifySent", messageReference: "<sent@example.test>", limit: 1 }, context);
   assert.deepEqual(verified, { messageIdHeader: "<sent@example.test>", verified: true });
-  assert.deepEqual(first.calls, ["list:Inbox:100", "search:Inbox:invoice:3", "read:ref-1"]);
+  assert.deepEqual(first.calls, ["list:Inbox:101", "search:Inbox:invoice:4", "read:ref-1"]);
   assert.deepEqual(second.calls, ["verify:<sent@example.test>"]);
 });
 
@@ -66,9 +123,12 @@ test("mailQuery returns bounded attachment metadata and thread summaries", async
   assert.deepEqual(thread, { messages: [{ folder: "Inbox", reference: "first-thread", uid: 7, subject: "thread subject", messageId: "<first-thread@example.test>", from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 }] });
 });
 
-test("bounded mailbox queries reject folders outside the account allow-list", async () => {
+test("arbitrary provider folder failures are safely mapped without provider text", async () => {
   const { service } = serviceFixture();
-  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "search", folder: "Private/Other", query: "invoice", limit: 1 }, context), (error: unknown) => error instanceof SafeError && error.code === "INVALID_INPUT");
+  const base = fixture();
+  const imap: ImapAdapter = { verifySent: async () => false, list: async () => { throw new Error("provider transcript secret"); }, search: async () => { throw new Error("provider transcript secret"); } };
+  const failing = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
+  await assert.rejects(failing.mailQuery({ accountId: "acct", operation: "search", folder: "Private/Other", query: "invoice", limit: 1 }, context), (error: unknown) => error instanceof SafeError && error.code === "PROVIDER_UNAVAILABLE" && !String(error).includes("provider transcript"));
 });
 
 test("prepare is idempotent across CC/BCC, reply, forwarding metadata, and repeated execution", async () => {

@@ -47,8 +47,8 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 
 - [x] `MailGatewayService` composes account and outbox repositories with an accountId-keyed IMAP/SMTP adapter registry.
 - [x] `mailAccounts` returns only accountId, displayName, providerKind, allowed sender, enabled, and optional non-secret health; credential references and endpoints are excluded.
-- [x] `mailQuery` explicitly resolves accounts, bounds limits to 100, dispatches list/search/read/verifySent, and returns normalized adapter values.
-- [x] List/search folders are restricted to the configured inbox or Sent folder; reads are bounded by the adapter and use opaque UID references.
+- [x] `mailQuery` explicitly resolves accounts, bounds limits to 100, dispatches folder discovery/list/search/read/verifySent, and returns normalized adapter values.
+- [x] Folder discovery returns only safe metadata; list/search route any provider-returned folder or the configured inbox default; reads/attachments use opaque reference folders; thread rejects folder/reference mismatches; reads remain bounded by the adapter.
 - [x] Attachment-only queries return bounded filename/content type/size metadata; thread queries return bounded normalized summaries from server-side header criteria and include the anchor.
 - [x] `mailPrepare` delegates durable asynchronous preparation without returning raw MIME.
 - [x] Batch sending remains intentionally represented by repeated single-message `mail_prepare`/`mail_execute` calls with distinct idempotency keys; no batch MCP tool was added.
@@ -77,5 +77,21 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 - [x] Eighteen messages were prepared and executed once (six per account): routing with one attachment, routing with two attachments, two batch messages, one reply, and one forward. Every row ended in durable `SENT_VERIFIED`.
 - [x] Zoho Sent indexing latency was exercised; ambiguous/unverified initial results were resolved only with `verifyOnly`, never with a normal resend.
 - [x] Provider Sent copies confirmed exact Message-ID, To, CC, BCC envelope, single/multiple attachment SHA-256 values, `In-Reply-To`, `References`, forwarded body, and forwarded attachment bytes for all three accounts.
-- [x] Cross-account opaque reference rejection, attachment metadata, thread criteria/deduplication/limit, folder allow-list rejection, header-injection rejection, idempotency conflict, and public MCP redaction were verified without sending additional mail.
+- [x] Cross-account opaque reference rejection, arbitrary-folder routing, folder mismatch, attachment metadata, thread criteria/deduplication/limit, header-injection rejection, idempotency conflict, and public MCP redaction were verified without sending additional mail.
 - [ ] Recipient inboxes were not read back because only the three sender accounts are configured locally; SMTP acceptance plus exact sender Sent verification is confirmed, but recipient-side rendering remains an external observation.
+
+## Slice 8 — configuration, health, and cursor hardening
+
+- [x] `sentPolicy` accepts only `provider_managed`; `gateway_append` is rejected safely and no APPEND path was added.
+- [x] `mail_accounts` health is optional, contacts no provider when disabled, performs no-send IMAP connectivity and SMTP `verify()` when enabled, and maps failures to generic `ok`/`failed` projections.
+- [x] List/search pagination is bounded, uses opaque account/folder/operation/last-UID cursors, applies server-side IMAP UID criteria, rejects invalid or cross-scope cursors, and preserves strict limits.
+- [x] No provider, credential, mailbox, or send is used by the new tests.
+- [x] `npm test`, integration tests, typecheck, build, audit, and diff check pass.
+
+## Slice 9 — all-mailbox-folder query
+
+- [x] `mail_query` accepts `folders` and returns only safe folder metadata, including optional special-use values.
+- [x] Folder discovery is exposed through `ImapAdapter` and `MailGatewayService`; disabled health does not discover folders.
+- [x] Provider-returned arbitrary folders route through list/search; thread folder/reference mismatches and cross-account opaque references are rejected safely.
+- [x] MCP output redaction removes arbitrary provider fields and keeps exactly four tools.
+- [x] Full typecheck, tests, build, audit, and diff check pass after this slice; no provider was contacted and no mail was sent.

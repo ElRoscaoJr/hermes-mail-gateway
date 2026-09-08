@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import { SafeError, type SafeResult } from "../errors.js";
 import type { AccountProjection, ForwardedAttachment } from "../domain/types.js";
-import type { ImapAdapter, SmtpAdapter, MailMessage, MailSummary } from "../mail/adapters.js";
+import type { ImapAdapter, SmtpAdapter, MailFolder, MailMessage, MailSummary } from "../mail/adapters.js";
 import { executeOnce } from "../mail/execute.js";
 import { prepareMessage } from "../mail/prepare.js";
 import { AccountRepository } from "../outbox/accounts.js";
@@ -30,7 +30,7 @@ export type ApplicationServiceResult = SafeResult<unknown>;
 
 export type MailAdapterRegistry = ReadonlyMap<string, { readonly imap: ImapAdapter; readonly smtp: SmtpAdapter }>;
 
-export interface AccountHealth { readonly status: "unavailable" | "unknown"; }
+export interface AccountHealth { readonly status: "ok" | "failed"; }
 
 export interface SafeAccountProjection {
   readonly accountId: string;
@@ -45,6 +45,23 @@ function safeAccount(account: AccountProjection): SafeAccountProjection {
   return { accountId: account.accountId, displayName: account.displayName, providerKind: account.providerKind, allowedSender: account.allowedSender, enabled: account.enabled };
 }
 
+type QueryCursor = { readonly accountId: string; readonly folder: string; readonly operation: "list" | "search"; readonly lastUid: number };
+function encodeCursor(cursor: QueryCursor): string { return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url"); }
+function decodeCursor(value: string, accountId: string, folder: string, operation: "list" | "search"): QueryCursor {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<QueryCursor>;
+    if (decoded.accountId !== accountId || decoded.folder !== folder || decoded.operation !== operation || !Number.isSafeInteger(decoded.lastUid) || (decoded.lastUid as number) < 1) throw new Error();
+    return decoded as QueryCursor;
+  } catch { throw new SafeError("INVALID_INPUT", "The query cursor is invalid for this account, folder, or operation."); }
+}
+
+function safeFolders(folders: readonly MailFolder[]): readonly MailFolder[] {
+  return folders.map((folder) => {
+    if (!folder || typeof folder.path !== "string" || typeof folder.name !== "string" || typeof folder.delimiter !== "string" || folder.path.length === 0 || folder.path.length > 1000 || folder.name.length > 1000 || folder.delimiter.length > 16 || /[\r\n\u0000]/.test(folder.path) || /[\r\n\u0000]/.test(folder.name) || /[\r\n\u0000]/.test(folder.delimiter) || (folder.specialUse !== undefined && (typeof folder.specialUse !== "string" || folder.specialUse.length > 128 || /[\r\n\u0000]/.test(folder.specialUse)))) throw new SafeError("PROVIDER_UNAVAILABLE", "The mail account provider returned invalid folder metadata.");
+    return { path: folder.path, name: folder.name, delimiter: folder.delimiter, ...(folder.specialUse === undefined ? {} : { specialUse: folder.specialUse }) };
+  });
+}
+
 function accountOrThrow(accounts: AccountRepository, accountId: string): AccountProjection {
   const account = accounts.get(accountId);
   if (!account) throw new SafeError("ACCOUNT_NOT_FOUND", "Account was not found.");
@@ -56,6 +73,13 @@ function adapterOrThrow(registry: MailAdapterRegistry, accountId: string): { rea
   const adapter = registry.get(accountId);
   if (!adapter) throw new SafeError("PROVIDER_UNAVAILABLE", "The mail account provider is unavailable.");
   return adapter;
+}
+
+async function safeProviderCall<T>(operation: () => Promise<T>): Promise<T> {
+  try { return await operation(); } catch (error) {
+    if (error instanceof SafeError) throw error;
+    throw new SafeError("PROVIDER_UNAVAILABLE", "The mail provider is unavailable.");
+  }
 }
 
 const MAX_FORWARDED_TEXT = 1_000_000;
@@ -88,10 +112,22 @@ function sourceAttachments(source: MailMessage, maxBytes: number): ForwardedAtta
 export class MailGatewayService implements MailApplicationService {
   constructor(private readonly accounts: AccountRepository, private readonly outbox: OutboxRepository, private readonly adapters: MailAdapterRegistry, private readonly maxRecipients = 100, private readonly maxAttachmentBytes = 25_000_000, private readonly maxQueryLimit = 100) {}
 
-  mailAccounts(input: MailAccountsInput): { readonly accounts: readonly SafeAccountProjection[] } {
-    const accounts = this.accounts.list().map(safeAccount);
-    // Health is intentionally omitted unless a future adapter exposes a safe capability check.
-    void input;
+  async mailAccounts(input: MailAccountsInput): Promise<{ readonly accounts: readonly SafeAccountProjection[] }> {
+    const configured = this.accounts.list();
+    if (!input.includeHealth) return { accounts: configured.map(safeAccount) };
+    const accounts = await Promise.all(configured.map(async (account) => {
+      const projection = safeAccount(account);
+      if (!account.enabled) return projection;
+      const adapter = this.adapters.get(account.accountId);
+      let status: AccountHealth["status"] = "failed";
+      try {
+        if (!adapter?.imap.checkConnectivity || !adapter.smtp.verify) throw new Error();
+        await adapter.imap.checkConnectivity();
+        await adapter.smtp.verify();
+        status = "ok";
+      } catch { /* Provider details are deliberately not exposed. */ }
+      return { ...projection, health: { status } };
+    }));
     return { accounts };
   }
 
@@ -99,34 +135,42 @@ export class MailGatewayService implements MailApplicationService {
     const account = accountOrThrow(this.accounts, input.accountId);
     const limit = Math.min(input.limit, Math.min(100, Math.max(1, this.maxQueryLimit)));
     const folder = input.folder ?? account.inboxFolder;
+    const paged = input.operation === "list" || input.operation === "search";
+    const cursor = input.cursor === undefined || !paged ? undefined : decodeCursor(input.cursor, account.accountId, folder, input.operation as "list" | "search");
     let value: unknown;
     const { imap } = adapterOrThrow(this.adapters, account.accountId);
-    if (input.operation !== "verifySent" && folder !== account.inboxFolder && folder !== account.sentFolder) {
-      throw new SafeError("INVALID_INPUT", "Folder is not allowed for bounded mailbox queries.");
-    }
-    if (input.operation === "list") {
+    if (input.operation === "folders") {
+      if (!imap.listFolders) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support folder discovery.");
+      value = { folders: safeFolders(await safeProviderCall(() => imap.listFolders!())) };
+    } else if (input.operation === "list") {
       if (!imap.list) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support listing.");
-      value = { messages: await imap.list(folder, limit) };
+      const messages = await safeProviderCall(() => imap.list!(folder, Math.min(limit + 1, 101), cursor?.lastUid));
+      const hasMore = messages.length > limit;
+      const page = messages.slice(0, limit);
+      value = { messages: page, hasMore, ...(hasMore && page.length > 0 ? { nextCursor: encodeCursor({ accountId: account.accountId, folder, operation: "list", lastUid: page[page.length - 1]!.uid }) } : {}) };
     } else if (input.operation === "search") {
       if (!input.query) throw new SafeError("INVALID_INPUT", "A search query is required.");
       if (!imap.search) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support search.");
-      value = { messages: await imap.search(folder, input.query, limit) };
+      const messages = await safeProviderCall(() => imap.search!(folder, input.query!, Math.min(limit + 1, 101), cursor?.lastUid));
+      const hasMore = messages.length > limit;
+      const page = messages.slice(0, limit);
+      value = { messages: page, hasMore, ...(hasMore && page.length > 0 ? { nextCursor: encodeCursor({ accountId: account.accountId, folder, operation: "search", lastUid: page[page.length - 1]!.uid }) } : {}) };
     } else if (input.operation === "read") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
       if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading.");
-      value = { message: await imap.read(input.messageReference) as MailMessage };
+      value = { message: await safeProviderCall(() => imap.read!(input.messageReference!)) as MailMessage };
     } else if (input.operation === "attachments") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
       if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading.");
-      const message = await imap.read(input.messageReference);
+      const message = await safeProviderCall(() => imap.read!(input.messageReference!));
       value = { attachments: message.attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
     } else if (input.operation === "thread") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
       if (!imap.thread) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support thread lookup.");
-      value = { messages: await imap.thread(folder, input.messageReference, limit) };
+      value = { messages: await safeProviderCall(() => imap.thread!(folder, input.messageReference!, limit)) };
     } else {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A Message-ID reference is required.");
-      value = { messageIdHeader: input.messageReference, verified: await imap.verifySent(input.messageReference) };
+      value = { messageIdHeader: input.messageReference, verified: await safeProviderCall(() => imap.verifySent(input.messageReference!)) };
     }
     this.outbox.appendAudit({ correlationId: context.correlationId, caller: context.caller, tool: "mail_query", accountId: account.accountId, outcomeCode: "OK", metadata: { operation: input.operation, limit } });
     return value;
@@ -148,7 +192,7 @@ export class MailGatewayService implements MailApplicationService {
       const account = accountOrThrow(this.accounts, input.accountId);
       const { imap } = adapterOrThrow(this.adapters, account.accountId);
       if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "Forwarding source reading is unavailable safely.");
-      source = await imap.read(input.forwarding.originalMessageReference);
+      source = await safeProviderCall(() => imap.read!(input.forwarding!.originalMessageReference));
       forwardedAttachments = sourceAttachments(source, Math.max(0, this.maxAttachmentBytes - attachmentBytes));
       forwarding = {
         originalMessageReference: input.forwarding.originalMessageReference,

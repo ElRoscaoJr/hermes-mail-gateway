@@ -12,8 +12,8 @@ The gateway is an authority for local intent and observed delivery state. It is 
 
 - Inputs: no account secrets; optional `includeHealth` boolean, default `true`.
 - Preconditions: caller is the authorized Hermes `main` profile; the service is running.
-- Processing: load the configured account registry; never expose credential material; when health is requested, perform bounded, non-mutating capability checks against the account's configured IMAP/SMTP endpoints.
-- Outputs: stable `accountId`, display name, provider kind, enabled status, capabilities, Sent policy, and redacted health state. The output must not contain usernames unless explicitly configured as safe display metadata, passwords, tokens, connection strings, or server diagnostics.
+- Processing: load the configured account registry; never expose credential material; when health is requested, perform bounded, non-mutating IMAP connectivity and SMTP transport verification checks for each enabled account.
+- Outputs: stable `accountId`, display name, provider kind, enabled status, and optional generic health state (`ok` or `failed`). The output must not contain usernames unless explicitly configured as safe display metadata, passwords, tokens, connection strings, provider diagnostics, or raw data.
 - Success: return all configured accounts in deterministic order, including accounts currently unavailable.
 - Empty: return an empty list with a success result if no accounts are configured.
 - Errors: reject unauthorized callers, malformed input, unavailable configuration, and dependency/runtime failures without exposing internal details.
@@ -21,14 +21,15 @@ The gateway is an authority for local intent and observed delivery state. It is 
 
 ### FR-2 — Bounded mail query (`mail_query`)
 
-- Inputs: `accountId`, operation (`list`, `search`, `read`, `thread`, `attachments`, or `verifySent`), optional folder, query/filter, opaque message reference, pagination cursor, and bounded limit.
-- Preconditions: account exists and is enabled; the caller is authorized for that account; `read`, `thread`, `attachments`, and `verifySent` have a valid opaque message reference or verification selector.
+- Inputs: `accountId`, operation (`folders`, `list`, `search`, `read`, `thread`, `attachments`, or `verifySent`), optional folder, query/filter, opaque message reference, pagination cursor, and bounded limit.
+- Preconditions: account exists and is enabled; the caller is authorized for that account; `read`, `thread`, `attachments`, and `verifySent` have a valid opaque message reference or verification selector. Folder discovery requires only the authenticated account.
 - Processing: validate the complete input schema and reject unknown fields; resolve `accountId` only through the local registry; use parameterized/search-library operations; enforce a server-side result and body-size limit; redact or omit unsupported fields.
-- Outputs: normalized message summaries or requested bounded content, with opaque references, stable message metadata, and provider-independent dates where available. Attachment-only queries return bounded filename/content type/size metadata; thread queries return bounded normalized summaries matched by server-side Message-ID, In-Reply-To, and References criteria. Raw provider response objects and attachment bytes are never returned.
+- Outputs: for `folders`, safe folder metadata only (`path`, `name`, `delimiter`, and optional `specialUse`); for other operations, normalized message summaries or requested bounded content, with opaque references, stable message metadata, and provider-independent dates where available. Attachment-only queries return bounded filename/content type/size metadata; thread queries return bounded normalized summaries matched by server-side Message-ID, In-Reply-To, and References criteria. Raw provider response objects and attachment bytes are never returned.
 - Success: return matching results and a continuation cursor when more results exist.
 - Empty: return an empty result set, not an error, for a valid query with no matches.
 - Errors: invalid account, invalid folder/query/reference, authorization failure, provider unavailability, malformed provider data, size limit, and verification-not-found are distinct error codes.
-- Postcondition: query operations do not mutate mail or the outbox. `verifySent` records an observation in the audit log but does not alter send state by itself.
+- Routing: `list` and `search` use the explicit folder or configured inbox default. `read` and `attachments` use the exact folder encoded in the account-bound opaque reference. `thread` searches only the requested folder and rejects a folder mismatch with its anchor reference. `verifySent` remains bound to the configured sent folder.
+- Postcondition: query operations do not mutate mail or the outbox. `verifySent` records an observation in the audit log but does not alter send state by itself. Folder discovery is not performed by `mail_accounts` health checks when health is disabled.
 
 ### FR-3 — Durable message preparation (`mail_prepare`)
 
@@ -75,10 +76,10 @@ The SQLite database is the source of truth for gateway intent, idempotency, stat
 | `imap_endpoint` / `smtp_endpoint` | Configuration references; never tool-visible as raw secret-bearing values. |
 | `credential_ref` | IMAP keychain/Secret Service reference, never credential value. |
 | `smtp_credential_ref` | Optional SMTP keychain/Secret Service reference; NULL means fall back to `credential_ref`. Never a credential value. |
-| `sent_policy` | `provider_managed` for Gmail/Zoho; explicit `provider_managed` or `gateway_append` for generic accounts after verification. |
+| `sent_policy` | `provider_managed` for every account. IMAP APPEND is not implemented. |
 | `enabled` | Operator-controlled activation flag. |
 | `allowed_sender` | Exact configured sender identity or domain policy. |
-| `mailbox_policy` | Allow-listed folders, query limits, attachment roots, and size limits. |
+| `mailbox_policy` | Query limits, attachment roots, and size limits; folders are discovered from the authenticated provider. |
 
 Account configuration is local operator state and is not accepted from MCP tool arguments.
 
@@ -144,7 +145,7 @@ There is no transition from `OUTCOME_UNKNOWN` to a blind resend. A future explic
 - Auth: account credential reference resolved by the host keychain/Secret Service; credentials never enter MCP arguments or logs.
 - Operations: only library-supported parameterized mailbox operations; no arbitrary command passthrough.
 - Failure handling: account health becomes unavailable; queries fail with a stable provider-unavailable error; no send fallback is attempted.
-- Limits: connection timeout, command timeout, result count, body/attachment size, concurrent operation count, and provider-specific folder allow-list.
+- Limits: connection timeout, command timeout, result count, body/attachment size, and concurrent operation count. Folder paths are explicit provider values or account defaults; the provider is authoritative for existence.
 
 ### SMTP
 
@@ -169,7 +170,7 @@ There is no transition from `OUTCOME_UNKNOWN` to a blind resend. A future explic
 ### Provider Sent policy
 
 - Gmail and Zoho use provider-managed Sent by default; the gateway does not append a second copy.
-- Generic accounts require an explicit account policy. `gateway_append` is permitted only after a provider-specific verification proves the provider does not already create the Sent copy.
+- All accounts use provider-managed Sent copies. The gateway does not implement IMAP APPEND.
 - Verification searches the configured Sent location for the exact preassigned Message-ID and applies bounded matching rules; subject/time/recipient coincidence alone is insufficient.
 
 ## Permissions matrix
