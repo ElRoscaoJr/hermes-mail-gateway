@@ -13,7 +13,7 @@ test("audit records are append-only and metadata is separate", () => { const { d
 test("audit metadata is redacted before SQLite persistence", () => { const { db, repo } = fixture(); const sensitiveValues = ["raw-password", "raw-token", "raw-secret", "raw-credential", "raw-api-key", "raw-bearer-token"]; repo.appendAudit({ correlationId: "corr-sensitive", caller: "Hermes main", tool: "mail_prepare", outcomeCode: "OK", metadata: { password: sensitiveValues[0], nested: { token: sensitiveValues[1], secret: sensitiveValues[2], credential: sensitiveValues[3], apiKey: sensitiveValues[4] }, authorization: `Bearer ${sensitiveValues[5]}` } }); const row = db.prepare("SELECT metadata FROM audit_events WHERE correlation_id = ?").get("corr-sensitive") as { metadata: string }; assert.match(row.metadata, /\[REDACTED\]/); for (const value of sensitiveValues) assert.equal(row.metadata.includes(value), false); });
 test("prepared-message audit metadata is also redacted atomically", () => { const { db, repo } = fixture(); repo.prepare(input({ audit: { correlationId: "corr-prepare-sensitive", caller: "Hermes main", tool: "mail_prepare", metadata: { password: "raw-prepare-password", nested: { token: "raw-prepare-token" } } } })); const row = db.prepare("SELECT metadata FROM audit_events WHERE correlation_id = ?").get("corr-prepare-sensitive") as { metadata: string }; assert.match(row.metadata, /\[REDACTED\]/); assert.equal(row.metadata.includes("raw-prepare-password"), false); assert.equal(row.metadata.includes("raw-prepare-token"), false); });
 
-test("migration 2 adds SMTP credential storage once and preserves legacy accounts", () => {
+test("migrations add SMTP credential and routing storage once and preserve legacy accounts", () => {
   const filename = join(mkdtempSync(join(tmpdir(), "hermes-migration-")), "legacy.db");
   const legacy = new Database(filename);
   legacy.exec(readFileSync(join(process.cwd(), "migrations/001_initial.sql"), "utf8"));
@@ -22,9 +22,13 @@ test("migration 2 adds SMTP credential storage once and preserves legacy account
   const db = openDatabase(filename);
   const columns = db.prepare("PRAGMA table_info(accounts)").all() as Array<{ name: string }>;
   assert.ok(columns.some((column) => column.name === "smtp_credential_ref"));
+  const outboxColumns = db.prepare("PRAGMA table_info(outbox_messages)").all() as Array<{ name: string }>;
+  for (const name of ["cc", "bcc", "reply_to", "in_reply_to", "references_header", "forwarding_metadata"]) assert.ok(outboxColumns.some((column) => column.name === name));
   assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 2").get() as { count: number }).count, 1);
+  assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 3").get() as { count: number }).count, 1);
   openDatabase(filename).close();
   assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 2").get() as { count: number }).count, 1);
+  assert.equal((db.prepare("SELECT count(*) AS count FROM schema_migrations WHERE version = 3").get() as { count: number }).count, 1);
   const accounts = new AccountRepository(db);
   accounts.upsert({ accountId: "legacy", displayName: "Legacy", providerKind: "generic_imap_smtp", imapEndpoint: "imap://localhost", smtpEndpoint: "smtp://localhost", credentialRef: "keychain:imap/legacy", sentPolicy: "provider_managed", enabled: true, allowedSender: "legacy@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX", sentFolder: "Sent" });
   assert.equal(accounts.get("legacy")?.smtpCredentialRef, undefined);

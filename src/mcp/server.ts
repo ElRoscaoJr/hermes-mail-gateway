@@ -22,7 +22,7 @@ function publicValue(value: unknown): unknown {
   if (Buffer.isBuffer(value)) return "[BINARY_OMITTED]";
   if (Array.isArray(value)) return value.map(publicValue);
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "rawMime" && key !== "raw_mime").map(([key, item]) => [key, publicValue(item)]));
+    return Object.fromEntries(Object.entries(value).filter(([key]) => !["bcc", "rawmime", "raw_mime"].includes(key.toLowerCase())).map(([key, item]) => [key, publicValue(item)]));
   }
   return value;
 }

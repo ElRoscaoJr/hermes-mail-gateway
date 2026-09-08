@@ -62,3 +62,17 @@
 - What failed: Mapping every non-rejection/non-connection error to a bare `UNKNOWN` result.
 - Working solution: Return a typed outcome with a bounded evidence token containing only a safe phase/category and, for provider rejection, a validated 4xx/5xx response code; never retain response text, credentials, or message data.
 - Rule for next time: Preserve enough redacted provider evidence to diagnose an ambiguous send without weakening no-retry semantics or exposing secrets.
+
+## L-010 — Map cross-keychain credentials at the SMTP boundary
+- Problem: The shared credential shape uses `username` and `password`, but Nodemailer expects `user` and `pass`, causing SMTP authentication failures while IMAP continued to work.
+- Where: `src/mail/adapters.ts` SMTP transport construction.
+- What failed: Passing the credential object directly as Nodemailer `auth`.
+- Working solution: Construct Nodemailer options with an explicit `{ user: credential.username, pass: credential.password }` mapping and cover the construction seam with a provider-free regression test.
+- Rule for next time: Map credentials explicitly at every provider-library boundary; never rely on coincidentally matching internal and library field names.
+
+## L-011 — Broaden IMAP search criteria server-side
+- Problem: Exact Message-ID verification succeeded for Zoho, but a bounded `text` search did not find newly sent Sent copies by a unique subject/body token.
+- Where: `src/mail/adapters.ts` bounded IMAP list/search path.
+- What failed: Relying on one IMAP `TEXT` criterion despite provider-specific search behavior.
+- Working solution: Use ImapFlow's bounded server-side `or` SearchObject with `text`, `subject`, and `header.Subject` criteria, then slice returned UIDs before fetching summaries.
+- Rule for next time: Keep mailbox search provider-tolerant at the SearchObject layer while preserving UID-only fetches and server-side result bounds.

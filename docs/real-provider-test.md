@@ -44,7 +44,7 @@ Never use a customer, colleague, mailing list, forwarding address, or any other 
 4. Confirm that the configured inbox folder is reachable and that the result is bounded. If the folder is wrong, the account is wrong, or the provider is unavailable, stop. Do not prepare or execute a message.
 5. Confirm the configured Sent folder and provider-managed/gateway-append policy from the external operator configuration. Do not infer them from a subject, timestamp, or SMTP acknowledgement.
 
-## 3. Prepare exactly one message
+## 3. Prepare one message (repeat only as separately reviewed, idempotent messages)
 
 1. Use a fresh idempotency key that has never been used with this disposable database.
 2. Call `mail_prepare` with exactly one recipient, the operator-owned self-test recipient, a unique test subject, a plain-text body, and the disposable fixture's exact path, byte size, SHA-256, and content type:
@@ -69,6 +69,10 @@ Never use a customer, colleague, mailing list, forwarding address, or any other 
 
 3. Record the returned `messageId`, `messageIdHeader`, account ID, and `PREPARED` state without copying raw MIME or credentials anywhere.
 4. Confirm that the returned `messageIdHeader` is the exact value to verify later. Do not replace it with the subject, sender, date, or a newly generated ID.
+
+For a controlled multi-message validation, repeat this prepare/execute lifecycle once per message with a fresh idempotency key and the same operator-approved recipient allow-list. There is deliberately no batch tool or cross-message transaction; never treat a loop as permission to retry an ambiguous message.
+
+Optional routing fields may be added to a reviewed test: `cc`, `bcc`, `replyTo`, `inReplyTo`, `references`, and `forwarding`. Keep all recipients within the operator-approved external allow-list. Forwarding uses the account-scoped opaque source reference, reads the bounded source before preparation, synthesizes a deterministic plain-text forwarded block, and persists safe source attachment bytes in the new raw MIME. It never rereads the source during execution and rejects source attachments that cannot be obtained safely. The source reference must belong to the same account.
 
 ## 4. Execute once and classify the outcome
 

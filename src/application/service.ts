@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import { SafeError, type SafeResult } from "../errors.js";
-import type { AccountProjection } from "../domain/types.js";
+import type { AccountProjection, ForwardedAttachment } from "../domain/types.js";
 import type { ImapAdapter, SmtpAdapter, MailMessage, MailSummary } from "../mail/adapters.js";
 import { executeOnce } from "../mail/execute.js";
 import { prepareMessage } from "../mail/prepare.js";
@@ -10,7 +10,7 @@ import { mailAccountsSchema, mailExecuteSchema, mailPrepareSchema, mailQuerySche
 
 export type MailAccountsInput = z.infer<typeof mailAccountsSchema>;
 export type MailQueryInput = z.infer<typeof mailQuerySchema>;
-export type MailPrepareInput = z.infer<typeof mailPrepareSchema>;
+export type MailPrepareInput = z.input<typeof mailPrepareSchema>;
 export type MailExecuteInput = z.infer<typeof mailExecuteSchema>;
 
 export interface ApplicationCallContext {
@@ -58,6 +58,32 @@ function adapterOrThrow(registry: MailAdapterRegistry, accountId: string): { rea
   return adapter;
 }
 
+const MAX_FORWARDED_TEXT = 1_000_000;
+const MAX_FORWARDED_HEADER = 2_000;
+function boundedBody(value: string | undefined): string { return (value ?? "").replace(/\r\n?/g, "\n").slice(0, MAX_FORWARDED_HEADER); }
+function addressText(values: MailMessage["from"]): string { return values.map((value) => value.name && value.address ? `${value.name} <${value.address}>` : value.address ?? value.name ?? "").filter(Boolean).join(", "); }
+function forwardedBlock(source: MailMessage): string {
+  const headers = [
+    ["From", addressText(source.from)], ["To", addressText(source.to)], ["Date", source.date],
+    ["Subject", source.subject], ["Message-ID", source.messageId],
+  ].filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0)
+    .map(([name, value]) => `${name}: ${boundedBody(value)}`).join("\n");
+  return `---------- Forwarded message ----------\n${headers}\n\n${boundedBody(source.text)}`.slice(0, MAX_FORWARDED_TEXT);
+}
+function sourceAttachments(source: MailMessage, maxBytes: number): ForwardedAttachment[] {
+  let total = 0;
+  return source.attachments.map((item) => {
+    if (item.content === undefined) throw new SafeError("UNSUPPORTED_OPERATION", "Forwarding source attachments is unavailable safely.");
+    const filename = item.filename;
+    const contentType = item.contentType;
+    if (!filename || filename.length > 255 || /[\r\n\\/]/.test(filename) || !contentType || contentType.length > 128 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(contentType)) throw new SafeError("INVALID_INPUT", "The source attachment metadata is invalid.");
+    if (item.size !== undefined && item.size !== item.content.length) throw new SafeError("ATTACHMENT_CHANGED", "The source attachment changed while it was being read.");
+    total += item.content.length;
+    if (item.content.length > maxBytes || total > maxBytes) throw new SafeError("INVALID_INPUT", "Forwarded attachments exceed the configured message size policy.");
+    return { filename, contentType, size: item.content.length, content: Buffer.from(item.content) };
+  });
+}
+
 /** Composes the repositories, account-scoped adapters, and credential-free domain use cases. */
 export class MailGatewayService implements MailApplicationService {
   constructor(private readonly accounts: AccountRepository, private readonly outbox: OutboxRepository, private readonly adapters: MailAdapterRegistry, private readonly maxRecipients = 100, private readonly maxAttachmentBytes = 25_000_000, private readonly maxQueryLimit = 100) {}
@@ -76,6 +102,9 @@ export class MailGatewayService implements MailApplicationService {
     let value: unknown;
     if (input.operation === "thread" || input.operation === "attachments") throw new SafeError("UNSUPPORTED_OPERATION", `Mail operation '${input.operation}' is not supported.`);
     const { imap } = adapterOrThrow(this.adapters, account.accountId);
+    if ((input.operation === "list" || input.operation === "search") && folder !== account.inboxFolder && folder !== account.sentFolder) {
+      throw new SafeError("INVALID_INPUT", "Folder is not allowed for bounded mailbox queries.");
+    }
     if (input.operation === "list") {
       if (!imap.list) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support listing.");
       value = { messages: await imap.list(folder, limit) };
@@ -96,19 +125,51 @@ export class MailGatewayService implements MailApplicationService {
   }
 
   async mailPrepare(input: MailPrepareInput, context: ApplicationCallContext): Promise<unknown> {
-    if (input.recipients.length > this.maxRecipients) throw new SafeError("INVALID_INPUT", "Too many recipients for the configured account policy.");
-    const attachmentBytes = input.attachments.reduce((total, attachment) => total + attachment.size, 0);
+    const cc = input.cc ?? [];
+    const bcc = input.bcc ?? [];
+    const attachments = input.attachments ?? [];
+    const recipientCount = input.recipients.length + cc.length + bcc.length;
+    if (recipientCount > this.maxRecipients) throw new SafeError("INVALID_INPUT", "Too many recipients for the configured account policy.");
+    const attachmentBytes = attachments.reduce((total, attachment) => total + attachment.size, 0);
     if (attachmentBytes > this.maxAttachmentBytes) throw new SafeError("INVALID_INPUT", "Attachments exceed the configured message size policy.");
+    const existing = this.outbox.findByIdempotencyKey(input.accountId, input.idempotencyKey);
+    let source: MailMessage | undefined;
+    let forwardedAttachments: ForwardedAttachment[] = [];
+    let forwarding = input.forwarding;
+    if (input.forwarding !== undefined && !existing) {
+      const account = accountOrThrow(this.accounts, input.accountId);
+      const { imap } = adapterOrThrow(this.adapters, account.accountId);
+      if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "Forwarding source reading is unavailable safely.");
+      source = await imap.read(input.forwarding.originalMessageReference);
+      forwardedAttachments = sourceAttachments(source, Math.max(0, this.maxAttachmentBytes - attachmentBytes));
+      forwarding = {
+        originalMessageReference: input.forwarding.originalMessageReference,
+        ...((source.messageId ?? input.forwarding.originalMessageId) === undefined ? {} : { originalMessageId: source.messageId ?? input.forwarding.originalMessageId as string }),
+        ...((source.subject ?? input.forwarding.originalSubject) === undefined ? {} : { originalSubject: source.subject ?? input.forwarding.originalSubject as string }),
+      };
+    }
+    const forwardingForPrepare = forwarding === undefined ? undefined : {
+      originalMessageReference: forwarding.originalMessageReference,
+      ...(forwarding.originalMessageId === undefined ? {} : { originalMessageId: forwarding.originalMessageId }),
+      ...(forwarding.originalSubject === undefined ? {} : { originalSubject: forwarding.originalSubject }),
+    };
+    const preparedTextBody = input.forwarding === undefined ? input.textBody : source === undefined ? input.textBody : input.textBody === undefined ? forwardedBlock(source) : `${input.textBody}\n\n${forwardedBlock(source)}`;
     const prepared = await prepareMessage(this.outbox, this.accounts, {
       accountId: input.accountId,
       idempotencyKey: input.idempotencyKey,
       recipients: input.recipients,
+      cc,
+      bcc,
+      ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
+      ...(input.inReplyTo === undefined ? {} : { inReplyTo: input.inReplyTo }),
+      references: input.references ?? [],
+      ...(forwardingForPrepare === undefined ? {} : { forwarding: forwardingForPrepare }),
       subject: input.subject,
-      ...(input.textBody === undefined ? {} : { textBody: input.textBody }),
+      ...(preparedTextBody === undefined ? {} : { textBody: preparedTextBody }),
       ...(input.htmlBody === undefined ? {} : { htmlBody: input.htmlBody }),
-      attachments: input.attachments,
-      audit: { correlationId: context.correlationId, caller: context.caller, tool: "mail_prepare", metadata: { recipientCount: input.recipients.length, attachmentCount: input.attachments.length } },
-    });
+      attachments,
+      audit: { correlationId: context.correlationId, caller: context.caller, tool: "mail_prepare", metadata: { recipientCount, attachmentCount: attachments.length } },
+    }, forwardedAttachments, input);
     return prepared;
   }
 

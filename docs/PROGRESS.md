@@ -25,21 +25,21 @@
 | 2 Functional spec | done | docs/02-functional-spec.md, docs/03-technical-plan.md, docs/flows/, docs/budget.md |
 | 3 Design handoff | n/a | No UI |
 | 4 Faithful build | n/a | No UI |
-| 5 Development | in progress | docs/05-test-points.md; durable foundation and provider-free MCP boundary implemented |
+| 5 Development | complete | durable foundation, provider adapters, routing/reply/forward support, and controlled-provider validation |
 | 6 Documentation | pending | docs/architecture.md, docs/api/ |
 | 7 Release | pending | docs/07-release.md |
 | 8 Website | n/a | No website intent |
 
 ## Current position
-- Phase: 5 — Development, application-service wiring slice complete.
-- Next action: Diagnose the remaining controlled-provider execution result using bounded SMTP evidence; do not retry any ambiguous real send automatically.
+- Phase: 5 — Development and controlled-provider validation complete; production rollout remains intentionally disabled.
+- Next action: Final release review, commit/push, and only then consider Hermes/systemd integration. Never retry an ambiguous send automatically.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
 - Open Design Requests: none
-- Unverified external steps/assets: Gmail IMAP and SMTP authentication now pass through the corrected local account reference; one complete gateway send remained `OUTCOME_UNKNOWN` and was not retried. Further real sends require explicit operator review.
+- Unverified external steps/assets: The sender-side provider path is verified for all three configured accounts. Eighteen controlled gateway messages (six per account) reached `SENT_VERIFIED`; exact Message-ID, search, read, attachment hashes, To/CC/BCC envelope, reply headers, and forwarding headers were checked from provider Sent copies. The three recipient inboxes are not configured for read-back in this gateway, so recipient-side inbox presentation was not independently inspected.
 - Phase 2 operational values still to pin before implementation: local authorization-token provisioning, account-specific folder names, retention periods, and rate/size limits. These must not be filled with credentials or real mailbox data in repository docs.
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-08 — Corrected the Gmail login identity mismatch in the operator-managed configuration, verified gateway IMAP and SMTP authentication, and ran one controlled end-to-end gateway attempt without retrying its ambiguous result. Added bounded SMTP outcome evidence and regression coverage without exposing raw errors or changing the four-tool API. Typecheck, 46 local tests, build, audit, and diff checks pass. The real-provider result remains explicitly separated from local test evidence.
+Last updated: 2026-09-08 — Completed controlled provider validation for the configured Gmail and Zoho accounts using a disposable database and operator-authorized recipients only. Eighteen gateway messages (six per account) were durably prepared, executed once, and confirmed by exact Message-ID in provider Sent; Zoho latency was recovered only with `verifyOnly`, never by SMTP retry. Provider Sent copies confirmed single/multiple attachment hashes, To/CC/BCC routing, reply headers, and real forwarding body/attachment preservation. Root-caused and fixed Nodemailer `{ username, password }` versus `{ user, pass }` authentication mapping, and broadened IMAP search to text/subject/header criteria. Typecheck, 55 tests, build, audit, and diff checks pass. Recipient inbox read-back remains outside the configured three sender accounts.

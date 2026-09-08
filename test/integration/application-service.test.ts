@@ -6,15 +6,15 @@ import { FakeSmtpAdapter, type ImapAdapter, type MailMessage, type MailSummary }
 import { SafeError } from "../../src/errors.js";
 
 function message(folder: string, reference: string, subject: string): MailSummary {
-  return { folder, reference, uid: 7, subject, messageId: `<${reference}@example.test>`, from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], flags: [], size: 42 };
+  return { folder, reference, uid: 7, subject, messageId: `<${reference}@example.test>`, from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 };
 }
 
 class FakeMailboxAdapter implements ImapAdapter {
   readonly calls: string[] = [];
-  constructor(private readonly label: string, private readonly verified = true) {}
+  constructor(private readonly label: string, private readonly verified = true, private readonly source?: Partial<MailMessage>) {}
   async list(folder: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`list:${folder}:${limit}`); return [message(folder, `${this.label}-list`, this.label)]; }
   async search(folder: string, query: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`search:${folder}:${query}:${limit}`); return [message(folder, `${this.label}-search`, query)]; }
-  async read(reference: string): Promise<MailMessage> { this.calls.push(`read:${reference}`); return { ...message("Inbox", reference, this.label), text: `safe body ${this.label}`, attachments: [] }; }
+  async read(reference: string): Promise<MailMessage> { this.calls.push(`read:${reference}`); return { ...message("Inbox", reference, this.label), text: `safe body ${this.label}`, attachments: [], ...this.source }; }
   async verifySent(messageIdHeader: string): Promise<boolean> { this.calls.push(`verify:${messageIdHeader}`); return this.verified; }
 }
 
@@ -58,6 +58,59 @@ test("thread and attachments fail explicitly instead of falling through", async 
   const { service } = serviceFixture();
   await assert.rejects(service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "ref-1", limit: 1 }, context), (error: unknown) => error instanceof SafeError && error.code === "UNSUPPORTED_OPERATION");
   await assert.rejects(service.mailQuery({ accountId: "acct", operation: "attachments", messageReference: "ref-1", limit: 1 }, context), (error: unknown) => error instanceof SafeError && error.code === "UNSUPPORTED_OPERATION");
+});
+
+test("bounded mailbox queries reject folders outside the account allow-list", async () => {
+  const { service } = serviceFixture();
+  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "search", folder: "Private/Other", query: "invoice", limit: 1 }, context), (error: unknown) => error instanceof SafeError && error.code === "INVALID_INPUT");
+});
+
+test("prepare is idempotent across CC/BCC, reply, forwarding metadata, and repeated execution", async () => {
+  const { service, repo, firstSmtp } = serviceFixture();
+  const input = { accountId: "acct", idempotencyKey: "routing-123456", recipients: ["to@example.test"], cc: ["cc@example.test"], bcc: ["bcc@example.test"], replyTo: "reply@example.test", inReplyTo: "<parent@example.test>", references: ["<root@example.test>", "<parent@example.test>"], forwarding: { originalMessageReference: "mailbox-ref", originalMessageId: "<forwarded@example.test>", originalSubject: "Original" }, subject: "Routing", textBody: "body", attachments: [] };
+  const first = await service.mailPrepare(input, context) as { messageId: string; state: string };
+  const second = await service.mailPrepare(input, context) as { messageId: string; state: string };
+  assert.equal(second.messageId, first.messageId);
+  assert.equal(second.state, "PREPARED");
+  const prepared = repo.get(first.messageId);
+  assert.deepEqual(prepared.cc, ["cc@example.test"]);
+  assert.deepEqual(prepared.bcc, ["bcc@example.test"]);
+  assert.equal(prepared.inReplyTo, "<parent@example.test>");
+  assert.deepEqual(prepared.references, ["<root@example.test>", "<parent@example.test>"]);
+  assert.deepEqual(prepared.forwarding, { originalMessageReference: "mailbox-ref", originalMessageId: "<mailbox-ref@example.test>", originalSubject: "first" });
+  const sent = await service.mailExecute({ accountId: "acct", messageId: first.messageId, verifyOnly: false }, context) as { state: string };
+  assert.equal(sent.state, "SENT_VERIFIED");
+  assert.deepEqual(firstSmtp.submissions[0]?.envelope, { from: "sender@example.test", to: ["to@example.test"], cc: ["cc@example.test"], bcc: ["bcc@example.test"] });
+  assert.equal(firstSmtp.submissions.length, 1);
+  assert.match(firstSmtp.submissions[0]?.mime.toString("utf8") ?? "", /X-Hermes-Forwarded-Message-Reference: mailbox-ref/);
+  assert.match(firstSmtp.submissions[0]?.mime.toString("utf8") ?? "", /safe body first/);
+});
+
+test("forwarding persists a deterministic body and real source attachment bytes", async () => {
+  const base = fixture();
+  const bytes = Buffer.from("source attachment bytes");
+  const source = new FakeMailboxAdapter("source", true, { subject: "Source subject", messageId: "<source@example.test>", text: "original text", attachments: [{ filename: "source.txt", contentType: "text/plain", size: bytes.length, content: bytes }] });
+  const smtp = new FakeSmtpAdapter();
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: source, smtp }]]));
+  const prepared = await service.mailPrepare({ accountId: "acct", idempotencyKey: "forward-bytes-123", recipients: ["recipient@example.test"], subject: "Fwd", forwarding: { originalMessageReference: "source-ref" }, textBody: "Prefix", attachments: [] }, context) as { messageId: string };
+  const raw = base.repo.getRawMime(prepared.messageId).toString("utf8");
+  assert.match(raw, /Prefix\r?\n\r?\n---------- Forwarded message ----------/);
+  assert.match(raw, /Subject: Source subject/);
+  assert.match(raw, /Message-ID: <source@example.test>/);
+  assert.ok(raw.includes(bytes.toString("base64")));
+  assert.equal(source.calls.filter((call) => call === "read:source-ref").length, 1);
+  await service.mailPrepare({ accountId: "acct", idempotencyKey: "forward-bytes-123", recipients: ["recipient@example.test"], subject: "Fwd", forwarding: { originalMessageReference: "source-ref" }, textBody: "Prefix", attachments: [] }, context);
+  assert.equal(source.calls.filter((call) => call === "read:source-ref").length, 1);
+});
+
+test("forwarding rejects source attachments without safe content and unsafe source metadata", async () => {
+  const base = fixture();
+  const noBytes = new FakeMailboxAdapter("source", true, { attachments: [{ filename: "x.txt", contentType: "text/plain", size: 1 }] });
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: noBytes, smtp: new FakeSmtpAdapter() }]]));
+  await assert.rejects(service.mailPrepare({ accountId: "acct", idempotencyKey: "forward-no-bytes", recipients: ["recipient@example.test"], subject: "Fwd", forwarding: { originalMessageReference: "ref" }, attachments: [] }, context), (error: unknown) => error instanceof SafeError && error.code === "UNSUPPORTED_OPERATION");
+  const unsafe = new FakeMailboxAdapter("source", true, { subject: "bad\nsubject" });
+  const unsafeService = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: unsafe, smtp: new FakeSmtpAdapter() }]]));
+  await assert.rejects(unsafeService.mailPrepare({ accountId: "acct", idempotencyKey: "forward-unsafe", recipients: ["recipient@example.test"], subject: "Fwd", forwarding: { originalMessageReference: "ref" }, attachments: [] }, context), (error: unknown) => error instanceof SafeError && error.code === "INVALID_INPUT");
 });
 
 test("mailPrepare and mailExecute use durable MIME, enforce ownership, and verifyOnly confirms without SMTP", async () => {

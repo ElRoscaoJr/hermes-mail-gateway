@@ -23,7 +23,13 @@ new MailGatewayService(accounts, outbox, new Map([
 ]))
 ```
 
-It resolves every account explicitly, returns only safe account projections, bounds list/search results, dispatches only to the adapter registered for that account, and delegates message preparation and non-verification execution to the existing durable domain functions. `verifyOnly` verifies the persisted Message-ID without calling SMTP. `thread` and `attachments` return `UNSUPPORTED_OPERATION`; they do not fall through to another operation. Account configuration fields (`credentialRef`, endpoints, attachment roots, and policy) and raw MIME never appear in its public results.
+It resolves every account explicitly, returns only safe account projections, bounds list/search results to the configured inbox or Sent folder, dispatches only to the adapter registered for that account, and delegates message preparation and non-verification execution to the existing durable domain functions. `verifyOnly` verifies the persisted Message-ID without calling SMTP. `thread` and `attachments` return `UNSUPPORTED_OPERATION`; they do not fall through to another operation. Bounded `read` includes attachment metadata, but there is no attachment-only query. Account configuration fields (`credentialRef`, endpoints, attachment roots, and policy) and raw MIME never appear in its public results.
+
+`mail_prepare` accepts separate `recipients` (To), `cc`, and `bcc` lists, optional `replyTo`, `inReplyTo`, and `references` headers, and optional forwarding metadata. Forwarding reads the source through the selected account’s IMAP adapter before preparation, derives bounded original Message-ID/Subject metadata, and appends a deterministic plain-text forwarded block to the caller’s prefix (or uses it as the body). Source attachments are copied as real MIME attachments only when bounded, validated bytes are available; otherwise preparation returns `UNSUPPORTED_OPERATION`. Account-bound opaque references reject cross-account reuse. The complete MIME is persisted before execution, and execution never rereads the source. BCC is an SMTP envelope recipient and is not emitted as a MIME `Bcc` header.
+
+Mailbox summaries expose visible `Cc` addresses plus safe `Reply-To` and `In-Reply-To` metadata from the IMAP envelope. Full reads additionally expose bounded `References` and only `X-Hermes-Forwarded-Message-Reference`, `X-Hermes-Forwarded-Message-ID`, and `X-Hermes-Forwarded-Subject` as `forwarding` metadata. Bcc, arbitrary headers, raw MIME, and attachment bytes are excluded from public MCP output; source attachment buffers remain an internal forwarding seam and are replaced by a binary omission marker by the MCP serializer.
+
+Batch sends are a caller-level sequence of independent prepare/execute pairs. Each message requires its own idempotency key; there is no batch tool and no cross-message transaction.
 
 ## Runtime configuration
 

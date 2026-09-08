@@ -7,7 +7,7 @@ export async function executeOnce(repo: OutboxRepository, smtp: SmtpAdapter, ima
   const claimed = repo.claim(messageId, owner, 30_000);
   let outcome: SmtpSubmissionResult;
   try {
-    outcome = submissionResult(await smtp.submit(claimed.messageIdHeader, mime, { from: claimed.fromAddress, to: claimed.recipients }));
+    outcome = submissionResult(await smtp.submit(claimed.messageIdHeader, mime, { from: claimed.fromAddress, to: claimed.recipients, cc: claimed.cc, bcc: claimed.bcc }));
   } catch (error) {
     return repo.transition(messageId, "OUTCOME_UNKNOWN", "provider outcome could not be established after submission began");
   }

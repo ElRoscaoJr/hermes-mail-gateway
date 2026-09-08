@@ -6,6 +6,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildMime } from "../../src/mail/mime.js";
 import { ImapFlowMailAdapter, NodemailerSmtpAdapter, type ImapFlowClient } from "../../src/mail/adapters.js";
+import type { MessageEnvelopeObject, SearchObject } from "imapflow";
 import type { AccountProjection } from "../../src/domain/types.js";
 import { parseCredentialReference } from "../../src/mail/credentials.js";
 import type { PreparedMessage } from "../../src/domain/types.js";
@@ -14,6 +15,7 @@ import { accountConfigSchema } from "../../src/config/model.js";
 const baseMessage: PreparedMessage = {
   messageId: "message-a", accountId: "acct", idempotencyKey: "idem-123456", messageIdHeader: "<fixed@hermes-mail-gateway.local>",
   fromAddress: "sender@example.test", recipients: ["recipient@example.test"], subject: "Synthetic", textBody: "plain body", state: "PREPARED", attachments: [],
+  cc: [], bcc: [], references: [],
 };
 
 test("credential references require exactly keychain service/account", () => {
@@ -26,9 +28,12 @@ test("credential references require exactly keychain service/account", () => {
 test("Nodemailer MIME preserves headers, HTML, attachment bytes, and Message-ID", async () => {
   const dir = "/tmp";
   const path = join(dir, `hermes-mime-${Date.now()}-${Math.random().toString(16).slice(2)}.bin`);
+  const secondPath = join(dir, `hermes-mime-second-${Date.now()}-${Math.random().toString(16).slice(2)}.bin`);
   const bytes = Buffer.from([0, 1, 2, 253, 254, 255]);
+  const secondBytes = Buffer.from("second attachment");
   writeFileSync(path, bytes);
-  const message = { ...baseMessage, htmlBody: "<strong>html body</strong>", attachments: [{ path, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), contentType: "application/octet-stream" }] };
+  writeFileSync(secondPath, secondBytes);
+  const message = { ...baseMessage, htmlBody: "<strong>html body</strong>", attachments: [{ path, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), contentType: "application/octet-stream" }, { path: secondPath, size: secondBytes.length, sha256: createHash("sha256").update(secondBytes).digest("hex"), contentType: "text/plain" }] };
   const raw = await buildMime(message, { attachmentRoots: [dir] });
   const mime = raw.toString("utf8");
   assert.match(mime, /\r\n/);
@@ -38,15 +43,29 @@ test("Nodemailer MIME preserves headers, HTML, attachment bytes, and Message-ID"
   assert.match(mime, /html body/);
   assert.match(mime, /Content-Disposition: attachment/);
   assert.ok(mime.includes(bytes.toString("base64")));
+  assert.ok(mime.includes(secondBytes.toString("base64")));
   const second = await buildMime(message, { attachmentRoots: [dir] });
   assert.match(second.toString("utf8"), /Message-ID: <fixed@hermes-mail-gateway\.local>/i);
+});
+
+test("MIME separates visible recipients from BCC and preserves reply/forward headers", async () => {
+  const message: PreparedMessage = { ...baseMessage, recipients: ["to@example.test"], cc: ["cc@example.test"], bcc: ["bcc@example.test"], replyTo: "reply@example.test", inReplyTo: "<parent@example.test>", references: ["<root@example.test>", "<parent@example.test>"], forwarding: { originalMessageReference: "mailbox-ref", originalMessageId: "<forwarded@example.test>", originalSubject: "Original subject" } };
+  const mime = (await buildMime(message, { attachmentRoots: ["/tmp"] })).toString("utf8");
+  assert.match(mime, /To: to@example\.test/i);
+  assert.match(mime, /Cc: cc@example\.test/i);
+  assert.doesNotMatch(mime, /Bcc:/i);
+  assert.match(mime, /Reply-To: reply@example\.test/i);
+  assert.match(mime, /In-Reply-To: <parent@example\.test>/i);
+  assert.match(mime, /References: <root@example\.test> <parent@example\.test>/i);
+  assert.match(mime, /X-Hermes-Forwarded-Message-Reference: mailbox-ref/i);
+  assert.match(mime, /X-Hermes-Forwarded-Message-ID: <forwarded@example\.test>/i);
 });
 
 function adapter(sendMail: (options: unknown) => Promise<{ message: Buffer; rejected?: readonly string[] }>) {
   return new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transport: { sendMail } });
 }
 
-const envelope = { from: baseMessage.fromAddress, to: baseMessage.recipients };
+const envelope = { from: baseMessage.fromAddress, to: baseMessage.recipients, cc: [], bcc: [] };
 
 test("SMTP adapter classifies provider rejection", async () => {
   const result = await adapter(async () => { throw { responseCode: 550, response: "rejected" }; }).submit("<fixed@id>", Buffer.from("body"), envelope);
@@ -61,7 +80,7 @@ test("SMTP adapter passes the explicit envelope with raw MIME", async () => {
   let options: unknown;
   const result = await adapter(async (value) => { options = value; return { message: Buffer.from("accepted"), rejected: [] }; }).submit("<fixed@id>", Buffer.from("stored raw MIME"), envelope);
   assert.deepEqual(result, { outcome: "ACKNOWLEDGED", evidence: "smtp_acknowledged" });
-  assert.deepEqual(options, { raw: Buffer.from("stored raw MIME"), envelope: { from: "sender@example.test", to: ["recipient@example.test"] } });
+  assert.deepEqual(options, { raw: Buffer.from("stored raw MIME"), envelope: { from: "sender@example.test", to: ["recipient@example.test"], cc: [], bcc: [] } });
 });
 
 test("SMTP adapter resolves its independent credential reference", async () => {
@@ -69,6 +88,15 @@ test("SMTP adapter resolves its independent credential reference", async () => {
   const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async (reference) => { requested = reference; return { username: "user", password: "secret" }; } }, transport: { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }) } });
   assert.equal((await smtp.submit("<fixed@id>", Buffer.from("body"), envelope)).outcome, "ACKNOWLEDGED");
   assert.equal(requested, "keychain:smtp/account");
+});
+
+test("SMTP adapter maps cross-keychain credentials to Nodemailer auth options", async () => {
+  let options: unknown;
+  const transport = { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }) };
+  const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transportFactory: (value) => { options = value; return transport; } });
+  assert.deepEqual((await smtp.submit("<fixed@id>", Buffer.from("body"), envelope)).outcome, "ACKNOWLEDGED");
+  assert.deepEqual(options, { host: "smtp.example.test", port: 465, secure: true, auth: { user: "user", pass: "secret" } });
+  assert.doesNotMatch(JSON.stringify(options), /username|password/);
 });
 
 test("local stream transport acknowledges raw submission with the explicit envelope", async () => {
@@ -97,14 +125,14 @@ test("SMTP diagnostics are bounded and never include provider response text", as
 });
 
 const imapAccount: AccountProjection = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX-custom", sentFolder: "Archive/Sent-custom" };
-function imapFake(messages: Record<string, { uid: number; source?: Buffer; envelope?: { messageId?: string; subject?: string } }>, searched: number[] = []): ImapFlowClient & { options?: unknown; locks: string[] } {
-  const state = { options: undefined as unknown, locks: [] as string[] };
-  return { ...state, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async () => searched, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() } : false; } };
+function imapFake(messages: Record<string, { uid: number; source?: Buffer; envelope?: MessageEnvelopeObject }>, searched: number[] = []): ImapFlowClient & { options?: unknown; locks: string[]; searches: SearchObject[] } {
+  const state = { options: undefined as unknown, locks: [] as string[], searches: [] as SearchObject[] };
+  return { ...state, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async (query) => { state.searches.push(query); return searched; }, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() } : false; } };
 }
 
 test("IMAP adapter uses explicit folders, credentials, UID-safe references, and bounded reads", async () => {
-  const source = Buffer.from("Message-ID: <read@example.test>\r\nSubject: Read me\r\nContent-Type: text/plain\r\n\r\nbounded body");
-  const fake = imapFake({ "7": { uid: 7, source, envelope: { messageId: "<read@example.test>", subject: "Read me" } } }, [7]);
+  const source = Buffer.from("Message-ID: <read@example.test>\r\nSubject: Read me\r\nCc: visible@example.test\r\nReply-To: replies@example.test\r\nIn-Reply-To: <parent@example.test>\r\nReferences: <root@example.test> <parent@example.test>\r\nX-Hermes-Forwarded-Message-Reference: source-ref\r\nX-Hermes-Forwarded-Message-ID: <source@example.test>\r\nX-Hermes-Forwarded-Subject: Original subject\r\nX-Secret-Arbitrary: must-not-escape\r\nContent-Type: text/plain\r\n\r\nbounded body");
+  const fake = imapFake({ "7": { uid: 7, source, envelope: { messageId: "<read@example.test>", subject: "Read me", cc: [{ address: "visible@example.test" }], replyTo: [{ address: "replies@example.test" }], inReplyTo: "<parent@example.test>", bcc: [{ address: "hidden@example.test" }] } } }, [7]);
   let requested: unknown;
   let credentialCalls = 0;
   const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async (reference) => { credentialCalls += 1; requested = reference; return { username: "user", password: "secret" }; } }, clientFactory: (options) => { fake.options = options; return fake; }, maxResults: 1, maxReadBytes: 256 });
@@ -116,12 +144,34 @@ test("IMAP adapter uses explicit folders, credentials, UID-safe references, and 
   assert.equal(read.uid, 7);
   assert.equal(read.folder, "INBOX-custom");
   assert.equal(read.text, "bounded body");
+  assert.deepEqual(read.cc, [{ address: "visible@example.test" }]);
+  assert.deepEqual(read.replyTo, [{ address: "replies@example.test" }]);
+  assert.equal(read.inReplyTo, "<parent@example.test>");
+  assert.deepEqual(read.references, ["<root@example.test>", "<parent@example.test>"]);
+  assert.deepEqual(read.forwarding, { originalMessageReference: "source-ref", originalMessageId: "<source@example.test>", originalSubject: "Original subject" });
+  assert.doesNotMatch(JSON.stringify(read), /hidden@example|X-Secret|must-not-escape|bcc/i);
   assert.equal(credentialCalls, 2);
   assert.equal(requested, "keychain:imap/account");
   assert.deepEqual((fake.options as { auth: { user: string; pass: string }; logger: unknown }).auth, { user: "user", pass: "secret" });
   assert.equal((fake.options as { logger: unknown }).logger, false);
+  assert.deepEqual(fake.searches[0], { or: [{ text: "read" }, { subject: "read" }, { header: { Subject: "read" } }] });
   assert.deepEqual(fake.locks, ["INBOX-custom", "INBOX-custom"]);
   assert.equal((await adapter.listFolders())[0]?.path, "INBOX-custom");
+});
+
+test("IMAP list without a query remains an all-message search", async () => {
+  const fake = imapFake({ "7": { uid: 7, envelope: { subject: "Synthetic" } } }, [7]);
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.list("INBOX-custom", 1);
+  assert.deepEqual(fake.searches, [{ all: true }]);
+});
+
+test("IMAP references are bound to the account that issued them", async () => {
+  const first = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => imapFake({ "7": { uid: 7, source: Buffer.from("Subject: x\r\n\r\nbody") } }, [7]) });
+  const reference = (await first.listMessages("INBOX-custom", undefined, 1).catch(() => []))[0]?.reference;
+  assert.ok(reference);
+  const other = new ImapFlowMailAdapter({ account: { ...imapAccount, accountId: "other" }, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => imapFake({}) });
+  await assert.rejects(other.read(reference), { code: "REFERENCE_INVALID" });
 });
 
 test("account configuration requires explicit inbox and sent folders", () => {
