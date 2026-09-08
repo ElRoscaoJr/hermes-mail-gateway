@@ -32,7 +32,7 @@
 
 ## Current position
 - Phase: 5 — Development and controlled-provider validation complete; production rollout remains intentionally disabled.
-- Next action: Final release review, commit/push, and only then consider Hermes/systemd integration. Never retry an ambiguous send automatically.
+- Current position: Production-completeness audit recorded in docs/production-completeness-audit.md. The reliable send/query core is real-tested, but P0 reliability gaps (UIDVALIDITY-aware references, crash recovery, and explicit operational controls) remain before production activation. Never retry an ambiguous send automatically.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and main-only access are recorded decisions that The operator can explicitly reverse.
