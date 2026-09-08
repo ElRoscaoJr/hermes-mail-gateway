@@ -100,9 +100,8 @@ export class MailGatewayService implements MailApplicationService {
     const limit = Math.min(input.limit, Math.min(100, Math.max(1, this.maxQueryLimit)));
     const folder = input.folder ?? account.inboxFolder;
     let value: unknown;
-    if (input.operation === "thread" || input.operation === "attachments") throw new SafeError("UNSUPPORTED_OPERATION", `Mail operation '${input.operation}' is not supported.`);
     const { imap } = adapterOrThrow(this.adapters, account.accountId);
-    if ((input.operation === "list" || input.operation === "search") && folder !== account.inboxFolder && folder !== account.sentFolder) {
+    if (input.operation !== "verifySent" && folder !== account.inboxFolder && folder !== account.sentFolder) {
       throw new SafeError("INVALID_INPUT", "Folder is not allowed for bounded mailbox queries.");
     }
     if (input.operation === "list") {
@@ -116,6 +115,15 @@ export class MailGatewayService implements MailApplicationService {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
       if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading.");
       value = { message: await imap.read(input.messageReference) as MailMessage };
+    } else if (input.operation === "attachments") {
+      if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
+      if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading.");
+      const message = await imap.read(input.messageReference);
+      value = { attachments: message.attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
+    } else if (input.operation === "thread") {
+      if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
+      if (!imap.thread) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support thread lookup.");
+      value = { messages: await imap.thread(folder, input.messageReference, limit) };
     } else {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A Message-ID reference is required.");
       value = { messageIdHeader: input.messageReference, verified: await imap.verifySent(input.messageReference) };

@@ -49,7 +49,7 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 - [x] `mailAccounts` returns only accountId, displayName, providerKind, allowed sender, enabled, and optional non-secret health; credential references and endpoints are excluded.
 - [x] `mailQuery` explicitly resolves accounts, bounds limits to 100, dispatches list/search/read/verifySent, and returns normalized adapter values.
 - [x] List/search folders are restricted to the configured inbox or Sent folder; reads are bounded by the adapter and use opaque UID references.
-- [x] Thread and attachment-only query operations remain explicitly unsupported and return `UNSUPPORTED_OPERATION`; attachment metadata is available through bounded `read` results.
+- [x] Attachment-only queries return bounded filename/content type/size metadata; thread queries return bounded normalized summaries from server-side header criteria and include the anchor.
 - [x] `mailPrepare` delegates durable asynchronous preparation without returning raw MIME.
 - [x] Batch sending remains intentionally represented by repeated single-message `mail_prepare`/`mail_execute` calls with distinct idempotency keys; no batch MCP tool was added.
 - [x] `mailExecute` enforces message ownership, durably confirms exact Sent matches with no-send `verifyOnly`, and delegates normal execution to `executeOnce` with stored MIME.
@@ -58,7 +58,7 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 - [x] SQLite migrations 2 and 3 add SMTP credential and message-routing metadata exactly once for fresh and legacy databases; repository upsert/get round-trips both without storing credentials.
 - [x] Integration tests use SQLite plus fake mailbox/IMAP and SMTP adapters; no real mail, keychain, systemd, credentials, or sends are used.
 - [x] Compiled stdio startup is smoke-tested with an MCP `initialize` frame and with absent configuration; diagnostics stay off stdout. The child-process checks skip only when the host sandbox denies process creation.
-- [x] `npm run typecheck`, `npm test`, and `npm run build` pass with 55 tests and 0 failures, including bounded forwarding body/attachment, source metadata safety, replay, cross-account reference coverage, and IMAP search criteria coverage.
+- [x] `npm run typecheck`, `npm test`, and `npm run build` pass with 56 tests and 0 failures, including bounded forwarding body/attachment, source metadata safety, replay, cross-account reference coverage, thread criteria/deduplication/limit, and MCP redaction coverage.
 - [x] `npm audit --offline --audit-level=high` found 0 vulnerabilities.
 - [x] Online `npm audit --audit-level=high` completed with 0 vulnerabilities.
 
@@ -77,5 +77,5 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 - [x] Eighteen messages were prepared and executed once (six per account): routing with one attachment, routing with two attachments, two batch messages, one reply, and one forward. Every row ended in durable `SENT_VERIFIED`.
 - [x] Zoho Sent indexing latency was exercised; ambiguous/unverified initial results were resolved only with `verifyOnly`, never with a normal resend.
 - [x] Provider Sent copies confirmed exact Message-ID, To, CC, BCC envelope, single/multiple attachment SHA-256 values, `In-Reply-To`, `References`, forwarded body, and forwarded attachment bytes for all three accounts.
-- [x] Cross-account opaque reference rejection, unsupported thread/attachment-only queries, folder allow-list rejection, header-injection rejection, idempotency conflict, and public BCC omission were verified without sending additional mail.
+- [x] Cross-account opaque reference rejection, attachment metadata, thread criteria/deduplication/limit, folder allow-list rejection, header-injection rejection, idempotency conflict, and public MCP redaction were verified without sending additional mail.
 - [ ] Recipient inboxes were not read back because only the three sender accounts are configured locally; SMTP acceptance plus exact sender Sent verification is confirmed, but recipient-side rendering remains an external observation.

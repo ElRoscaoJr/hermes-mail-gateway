@@ -125,9 +125,9 @@ test("SMTP diagnostics are bounded and never include provider response text", as
 });
 
 const imapAccount: AccountProjection = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX-custom", sentFolder: "Archive/Sent-custom" };
-function imapFake(messages: Record<string, { uid: number; source?: Buffer; envelope?: MessageEnvelopeObject }>, searched: number[] = []): ImapFlowClient & { options?: unknown; locks: string[]; searches: SearchObject[] } {
+function imapFake(messages: Record<string, { uid: number; source?: Buffer; envelope?: MessageEnvelopeObject }>, searched: number[] | ((query: SearchObject) => number[]) = []): ImapFlowClient & { options?: unknown; locks: string[]; searches: SearchObject[] } {
   const state = { options: undefined as unknown, locks: [] as string[], searches: [] as SearchObject[] };
-  return { ...state, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async (query) => { state.searches.push(query); return searched; }, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() } : false; } };
+  return { ...state, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async (query) => { state.searches.push(query); return typeof searched === "function" ? searched(query) : searched; }, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set<string>() } : false; } };
 }
 
 test("IMAP adapter uses explicit folders, credentials, UID-safe references, and bounded reads", async () => {
@@ -172,6 +172,7 @@ test("IMAP references are bound to the account that issued them", async () => {
   assert.ok(reference);
   const other = new ImapFlowMailAdapter({ account: { ...imapAccount, accountId: "other" }, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => imapFake({}) });
   await assert.rejects(other.read(reference), { code: "REFERENCE_INVALID" });
+  await assert.rejects(other.thread("INBOX-custom", reference, 1), { code: "REFERENCE_INVALID" });
 });
 
 test("account configuration requires explicit inbox and sent folders", () => {
@@ -189,6 +190,32 @@ test("IMAP verifySent checks the exact Message-ID in the configured sent folder"
   assert.equal(await adapter.verifySent("<wanted@example.test>"), true);
   assert.equal(await adapter.verifySent("<absent@example.test>"), false);
   assert.deepEqual(fake.locks, ["Archive/Sent-custom", "Archive/Sent-custom"]);
+});
+
+test("IMAP thread search uses server-side header criteria, includes the anchor, deduplicates, and obeys the limit", async () => {
+  const source = Buffer.from("Message-ID: <anchor@example.test>\r\nIn-Reply-To: <parent@example.test>\r\nReferences: <root@example.test> <parent@example.test>\r\nSubject: Anchor\r\n\r\nbody");
+  const fake = imapFake({
+    "7": { uid: 7, source, envelope: { messageId: "<anchor@example.test>", subject: "Anchor", inReplyTo: "<parent@example.test>" } },
+    "8": { uid: 8, envelope: { messageId: "<reply@example.test>", subject: "Reply" } },
+    "9": { uid: 9, envelope: { messageId: "<later@example.test>", subject: "Later" } },
+  }, (query) => {
+    const header = query.header;
+    if (header?.["Message-ID"] === "<anchor@example.test>") return [7, 8];
+    if (header?.["In-Reply-To"] === "<anchor@example.test>") return [8];
+    if (header?.References === "<anchor@example.test>") return [9];
+    if (header?.["Message-ID"] === "<parent@example.test>") return [8, 9];
+    if (header?.["In-Reply-To"] === "<parent@example.test>") return [9];
+    return [];
+  });
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  const anchor = (await adapter.read(Buffer.from(JSON.stringify({ accountId: "acct", folder: "INBOX-custom", uid: 7 }), "utf8").toString("base64url"))).reference;
+  const result = await adapter.thread("INBOX-custom", anchor, 2);
+  assert.deepEqual(result.map((item) => item.uid), [7, 8]);
+  assert.deepEqual(fake.searches, [
+    { header: { "Message-ID": "<anchor@example.test>" } }, { header: { "In-Reply-To": "<anchor@example.test>" } }, { header: { References: "<anchor@example.test>" } },
+    { header: { "Message-ID": "<parent@example.test>" } }, { header: { "In-Reply-To": "<parent@example.test>" } }, { header: { References: "<parent@example.test>" } },
+    { header: { "Message-ID": "<root@example.test>" } }, { header: { "In-Reply-To": "<root@example.test>" } }, { header: { References: "<root@example.test>" } },
+  ]);
 });
 
 test("IMAP adapter maps connection and credential failures safely", async () => {

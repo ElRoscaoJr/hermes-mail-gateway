@@ -110,7 +110,7 @@ Optional routing fields may be added to a reviewed test: `cc`, `bcc`, `replyTo`,
    {"accountId":"<configured-account-id>","operation":"read","messageReference":"<returned-mailbox-reference>","limit":1}
    ```
 
-   Confirm the returned message metadata includes the expected exact Message-ID and attachment metadata. The `attachments` query operation is intentionally unsupported in v1; attachment verification is performed by reading the message.
+   Confirm the returned message metadata includes the expected exact Message-ID and attachment metadata. The bounded `attachments` query may also be used with the same account-scoped opaque message reference; it returns filename, content type, and size only, never attachment bytes.
 
 ## 7. Stop and clean up
 

@@ -15,6 +15,7 @@ class FakeMailboxAdapter implements ImapAdapter {
   async list(folder: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`list:${folder}:${limit}`); return [message(folder, `${this.label}-list`, this.label)]; }
   async search(folder: string, query: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`search:${folder}:${query}:${limit}`); return [message(folder, `${this.label}-search`, query)]; }
   async read(reference: string): Promise<MailMessage> { this.calls.push(`read:${reference}`); return { ...message("Inbox", reference, this.label), text: `safe body ${this.label}`, attachments: [], ...this.source }; }
+  async thread(folder: string, reference: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`thread:${folder}:${reference}:${limit}`); return [message(folder, `${this.label}-thread`, "thread subject")]; }
   async verifySent(messageIdHeader: string): Promise<boolean> { this.calls.push(`verify:${messageIdHeader}`); return this.verified; }
 }
 
@@ -54,10 +55,15 @@ test("mailQuery dispatches all supported operations to the account-scoped mailbo
   assert.deepEqual(second.calls, ["verify:<sent@example.test>"]);
 });
 
-test("thread and attachments fail explicitly instead of falling through", async () => {
-  const { service } = serviceFixture();
-  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "ref-1", limit: 1 }, context), (error: unknown) => error instanceof SafeError && error.code === "UNSUPPORTED_OPERATION");
-  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "attachments", messageReference: "ref-1", limit: 1 }, context), (error: unknown) => error instanceof SafeError && error.code === "UNSUPPORTED_OPERATION");
+test("mailQuery returns bounded attachment metadata and thread summaries", async () => {
+  const base = fixture();
+  const first = new FakeMailboxAdapter("first", true, { attachments: [{ filename: "invoice.pdf", contentType: "application/pdf", size: 12, content: Buffer.from("secret bytes") }] });
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: first, smtp: new FakeSmtpAdapter() }]]));
+  const attachments = await service.mailQuery({ accountId: "acct", operation: "attachments", messageReference: "ref-1", limit: 1 }, context);
+  assert.deepEqual(attachments, { attachments: [{ filename: "invoice.pdf", contentType: "application/pdf", size: 12 }] });
+  assert.doesNotMatch(JSON.stringify(attachments), /secret bytes|"content"/i);
+  const thread = await service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "ref-1", limit: 1 }, context);
+  assert.deepEqual(thread, { messages: [{ folder: "Inbox", reference: "first-thread", uid: 7, subject: "thread subject", messageId: "<first-thread@example.test>", from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 }] });
 });
 
 test("bounded mailbox queries reject folders outside the account allow-list", async () => {
