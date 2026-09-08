@@ -80,12 +80,12 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 
 - [x] Disposable configuration/database/attachment root used outside the repository; no production database or systemd service was touched.
 - [x] `mail_accounts`, bounded inbox listing, and bounded search/read work through the compiled MCP stdio process for the configured Gmail and Zoho accounts.
-- [x] SMTP authentication works for all three accounts after explicit cross-keychain-to-Nodemailer credential mapping; no credential values were printed.
-- [x] Eighteen messages were prepared and executed once (six per account): routing with one attachment, routing with two attachments, two batch messages, one reply, and one forward. Every row ended in durable `SENT_VERIFIED`.
+- [x] SMTP authentication works for the configured accounts after explicit cross-keychain-to-Nodemailer credential mapping; no credential values were printed.
+- [x] A controlled message matrix was prepared and executed once per configured account: routing with attachments, batch messages, one reply, and one forward. Every row ended in durable `SENT_VERIFIED`.
 - [x] Zoho Sent indexing latency was exercised; ambiguous/unverified initial results were resolved only with `verifyOnly`, never with a normal resend.
-- [x] Provider Sent copies confirmed exact Message-ID, To, CC, BCC envelope, single/multiple attachment SHA-256 values, `In-Reply-To`, `References`, forwarded body, and forwarded attachment bytes for all three accounts.
+- [x] Provider Sent copies confirmed exact Message-ID, To, CC, BCC envelope, attachment SHA-256 values, `In-Reply-To`, `References`, forwarded body, and forwarded attachment bytes for the configured accounts.
 - [x] Cross-account opaque reference rejection, arbitrary-folder routing, folder mismatch, attachment metadata, thread criteria/deduplication/limit, header-injection rejection, idempotency conflict, and public MCP redaction were verified without sending additional mail.
-- [ ] Recipient inboxes were not read back because only the three sender accounts are configured locally; SMTP acceptance plus exact sender Sent verification is confirmed, but recipient-side rendering remains an external observation.
+- [ ] Recipient inboxes were not read back because only sender accounts are configured locally; SMTP acceptance plus exact sender Sent verification is confirmed, but recipient-side rendering remains an external observation.
 
 ## Slice 8 — configuration, health, and cursor hardening
 

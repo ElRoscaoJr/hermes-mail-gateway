@@ -12,6 +12,6 @@ This is a preliminary AI-time estimate for discovery only, not a traditional hum
 | Documentation and release hygiene | 1–3 h | Operations, security, migration, reusable-agent setup |
 | Contingency | +30% | Provider quirks and real-mail verification |
 
-Assumptions: no UI, no client-facing deployment, no OAuth provider adapter in v1, and real tests only to the operator-controlled self-test address configured outside the repository. The operator supplies or configures credentials manually; the agent never stores raw secrets in Git or memory.
+Assumptions: no UI, no client-facing deployment, no OAuth provider adapter in v1, and real tests only to operator-controlled self-test addresses configured outside the repository. The operator supplies or configures credentials manually; the agent never stores raw secrets in Git or memory.
 
 AI cost mode: subscription; no API-cost estimate included.

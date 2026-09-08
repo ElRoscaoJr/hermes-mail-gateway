@@ -2,7 +2,7 @@
 
 ## Scope and sources
 
-This scan covers the candidates discussed by The operator and the current local baseline. Facts were checked against repository READMEs, source code, npm metadata, and live GitHub metadata on 2026-09-07.
+This scan covers the candidate connectors and the current local baseline. Facts were checked against repository READMEs, source code, npm metadata, and live GitHub metadata on 2026-09-07.
 
 ## Competitor inventory
 

@@ -1,11 +1,11 @@
 # Decisions — Hermes Mail Gateway
 
-> Append-only. A future session must not re-open a decision unless The operator explicitly reverses it.
+> Append-only. A future session must not re-open a decision unless the project operator explicitly reverses it.
 
 ## D-001 — Project shape
 - Date / phase: 2026-09-07 / Phase 1
 - Decision: Build a new minimal local mail gateway and MCP server rather than deploy a general-purpose third-party mail MCP unchanged.
-- Why: The operator needs only Gmail, Zoho, and generic IMAP/SMTP. A small controlled surface is easier to audit and harden than a large multi-provider server.
+- Why: The initial operator scope is Gmail, Zoho, and generic IMAP/SMTP. A small controlled surface is easier to audit and harden than a large multi-provider server.
 - Alternatives rejected: Direct Himalaya automation (historically unreliable for agent sends); unmodified third-party MCP (no persistent idempotency and unnecessary provider surface).
 - Supersedes: none
 
@@ -40,7 +40,7 @@
 ## D-006 — Test safety
 - Date / phase: 2026-09-07 / Phase 1
 - Decision: All real-mail tests go only to the operator-controlled self-test address configured outside the repository; never test against clients or third parties.
-- Why: The operator's explicit permanent rule after previous accidental client sends.
+- Why: The operator requires real-mail tests to use only explicitly authorized self-test recipients.
 - Alternatives rejected: Sending test messages to customer accounts.
 - Supersedes: none
 

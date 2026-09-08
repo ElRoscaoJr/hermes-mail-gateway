@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This is an internal infrastructure project for The operator's Hermes installation, not a client quote. No customer price, tax, or billable developer rate is being invented.
+This is an internal infrastructure project, not a client quote. No customer price, tax, or billable developer rate is being invented.
 
 ## Scope basis
 
@@ -18,7 +18,7 @@ OAuth/API adapters, remote access, provider webhooks, destructive mailbox operat
 
 ## AI and operator effort
 
-| Work area | AI working range | The operator/operator effort | Status |
+| Work area | AI working range | Operator effort | Status |
 |---|---:|---:|---|
 | Functional specification | 1–2 h | 15–30 min decisions/review | Complete/in review |
 | Gateway implementation | 3–6 h | 30–60 min review | Pending |
@@ -37,4 +37,4 @@ These are AI working-time ranges, not calendar promises or traditional human-dev
 
 ## Approval
 
-Internal project. The scope and cost treatment are approved by The operator's explicit instruction to proceed autonomously. Any new paid dependency or external service requires a separate decision before adoption.
+Internal project. The scope and cost treatment are approved by the project operator. Any new paid dependency or external service requires a separate decision before adoption.

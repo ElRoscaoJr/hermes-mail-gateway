@@ -2,7 +2,7 @@
 
 ## Problem & outcome
 
-Hermes needs one reliable email capability for The operator's Gmail and Zoho accounts. The current Himalaya-based workflow is a terminal-client integration and has caused parser failures, missing attachments, duplicate Sent copies, and unsafe ambiguity after SMTP errors.
+Hermes needs one reliable email capability for operator-managed Gmail and Zoho accounts. The current Himalaya-based workflow is a terminal-client integration and has caused parser failures, missing attachments, duplicate Sent copies, and unsafe ambiguity after SMTP errors.
 
 The outcome is a small local MCP service that lets Hermes query and mutate all trusted accounts with `accountId`, while making duplicate sends and blind retries structurally difficult.
 
@@ -41,7 +41,7 @@ The outcome is a small local MCP service that lets Hermes query and mutate all t
 - Node.js/TypeScript service on Debian 13.
 - MCP over loopback HTTP, one systemd user service.
 - Four tools: `mail_accounts`, `mail_query`, `mail_prepare`, `mail_execute`.
-- Three current accounts: Gmail, Zoho, Zoho.
+- Gmail and Zoho accounts configured outside the repository.
 - Generic IMAP/SMTP account configuration.
 - Keychain-backed credentials.
 - SQLite outbox with persistent idempotency and state recovery.
@@ -54,7 +54,7 @@ The outcome is a small local MCP service that lets Hermes query and mutate all t
 - Gmail API adapter with OAuth.
 - Zoho Mail API adapter with OAuth.
 - Webhook/watch-based inbox notifications.
-- Additional providers only when The operator requests one.
+- Additional providers only when the operator requests one.
 
 ## Honest assessment
 
@@ -69,7 +69,7 @@ A new small gateway is justified because the project's reliability requirements 
 - No direct email sends before outbox persistence.
 - No provider credentials in MCP configuration or model context.
 - No dynamic `npx @latest` production deployment.
-- Main Hermes profile is the initial consumer; mc must not receive personal email access.
+- One explicitly selected Hermes profile is the initial consumer; other profiles must not receive mailbox access by default.
 
 ## License
 
@@ -121,4 +121,4 @@ A new small gateway is justified because the project's reliability requirements 
 
 ## Open questions for the user
 
-None for the v1 defaults. The repository is private and uses MIT, project artifacts are in English, v1 starts with IMAP/SMTP, OAuth is later, and only the `main` Hermes profile receives the mail MCP. The operator can explicitly reverse any of these decisions before the functional specification is closed.
+None for the v1 defaults. The repository uses MIT, project artifacts are in English, v1 starts with IMAP/SMTP, OAuth is later, and only one explicitly selected Hermes profile receives the mail MCP. The operator can explicitly reverse any of these decisions before the functional specification is closed.

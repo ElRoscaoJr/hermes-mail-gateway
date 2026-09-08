@@ -19,7 +19,7 @@ Why this stack: it keeps the protocol surface mature and small while placing rel
 |---|---|
 | Host | Debian 13, service user, systemd user supervision. |
 | Runtime | Node.js 22 LTS minimum; exact patch pinned before scaffold. |
-| Accounts | Gmail, Zoho, Zoho, and generic IMAP/SMTP. |
+| Accounts | Gmail, Zoho, and generic IMAP/SMTP. |
 | Transport | Local stdio MCP only; loopback HTTP is deferred until authenticated transport exists. |
 | Result limits | Configured server-side maximums for query rows, read bytes, attachment bytes, and recipients. Query/read limits are implemented in this slice; concurrency, timeouts, rates, and backoff are the next P0 slice. |
 | Reliability budget | One execution claim per prepared message; zero blind retries; every attempt durably classified. |
