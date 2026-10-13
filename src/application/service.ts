@@ -297,7 +297,7 @@ export class MailGatewayService implements MailApplicationService {
       return { messageId: updated.messageId, accountId: updated.accountId, messageIdHeader: updated.messageIdHeader, state: updated.state, verifyOnly: true, verified };
     }
     try {
-      const executed = await executeOnce(this.outbox, smtp, imap, message.messageId, context.correlationId);
+      const executed = await executeOnce(this.outbox, smtp, imap, message.messageId, context.correlationId, account.sentPolicy);
       this.outbox.appendAudit({ correlationId: context.correlationId, caller: context.caller, tool: "mail_execute", accountId: account.accountId, messageId: message.messageId, oldState: message.state, newState: executed.state, outcomeCode: executed.state, metadata: { verifyOnly: false } });
       return executed;
     } catch (error) {

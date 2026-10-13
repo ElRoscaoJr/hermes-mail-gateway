@@ -92,3 +92,8 @@
 - Why: Mailbox state changes need provider confirmation, account isolation, mailbox locks, auditability, and no permanent deletion. Draft APPEND needs a durable provider outcome protocol that is not yet available.
 - Alternatives rejected: A fifth MCP tool, localized-name assumptions, permanent delete/expunge, batch mutation, and fake local provider drafts.
 - Supersedes: none
+
+## D-014 — Optional gateway-managed Sent for generic IMAP/SMTP
+- Decision: Retain `provider_managed` for providers that save their own Sent copies. Add opt-in `gateway_append` only for generic IMAP/SMTP accounts that do not; check for an exact Message-ID before APPEND, append immutable persisted MIME with `\\Seen` only after SMTP acknowledgment, and verify the exact Message-ID afterward. No SMTP or APPEND retry follows an ambiguous outcome.
+- Why: SMTP acknowledgment alone does not establish a provider-visible Sent copy on every generic server. The explicit policy preserves provider-managed no-duplicate behavior and the outbox's non-retry guarantee.
+- Supersedes: D-011's restriction to only `provider_managed`, but not its bounded health and query rules.

@@ -1,7 +1,8 @@
 import { OutboxRepository } from "../outbox/repository.js";
+import type { SentPolicy } from "../domain/types.js";
 import type { SmtpAdapter, ImapAdapter, SmtpOutcome, SmtpSubmissionResult } from "./adapters.js";
 function submissionResult(value: SmtpOutcome | SmtpSubmissionResult): SmtpSubmissionResult { return typeof value === "string" ? { outcome: value, evidence: "adapter_outcome" } : value; }
-export async function executeOnce(repo: OutboxRepository, smtp: SmtpAdapter, imap: ImapAdapter, messageId: string, owner: string): Promise<ReturnType<OutboxRepository["get"]>> {
+export async function executeOnce(repo: OutboxRepository, smtp: SmtpAdapter, imap: ImapAdapter, messageId: string, owner: string, sentPolicy: SentPolicy = "provider_managed"): Promise<ReturnType<OutboxRepository["get"]>> {
   const mime = repo.getRawMime(messageId);
   const current = repo.get(messageId); if (current.state === "SENT_VERIFIED") return current;
   const claimed = repo.claim(messageId, owner, 30_000);
@@ -18,6 +19,13 @@ export async function executeOnce(repo: OutboxRepository, smtp: SmtpAdapter, ima
   let verified = false;
   try {
     verified = await imap.verifySent(claimed.messageIdHeader);
+    if (!verified && sentPolicy === "gateway_append") {
+      if (!imap.appendSent) return repo.transition(messageId, "SENT_UNVERIFIED", "SMTP acknowledged but Sent append is unavailable");
+      try {
+        await imap.appendSent(mime, { accountId: claimed.accountId, messageIdHeader: claimed.messageIdHeader });
+      } catch { /* APPEND may have succeeded; only an exact Sent lookup can reconcile it. */ }
+      verified = await imap.verifySent(claimed.messageIdHeader);
+    }
   } catch {
     return repo.transition(messageId, "SENT_UNVERIFIED", "submission acknowledged but Sent verification failed safely");
   }

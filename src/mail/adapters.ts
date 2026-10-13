@@ -7,6 +7,7 @@ import type { CredentialResolver } from "./credentials.js";
 
 export interface ImapAdapter {
   verifySent(messageIdHeader: string): Promise<boolean>;
+  appendSent?(rawMime: Buffer, context: DraftAppendContext): Promise<void>;
   appendDraft?(rawMime: Buffer, folder: string, context: DraftAppendContext): Promise<DraftAppendResult>;
   listFolders?(): Promise<readonly MailFolder[]>;
   checkConnectivity?(): Promise<void>;
@@ -184,6 +185,32 @@ export class ImapFlowMailAdapter implements ImapAdapter {
 
   async listFolders(): Promise<readonly MailFolder[]> { return this.withClient(async (client) => (await client.list()).filter((folder) => !folder.flags?.has("\\Noselect") && !folder.flags?.has("\\NOSELECT")).map((folder) => ({ path: folder.path, name: folder.name, delimiter: folder.delimiter, ...(folder.specialUse === undefined ? {} : { specialUse: folder.specialUse }) }))); }
 
+  async appendSent(rawMime: Buffer, context: DraftAppendContext): Promise<void> {
+    if (context.accountId !== this.options.account.accountId || !/^<[^<>\r\n]+>$/.test(context.messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Sent append context is invalid for this account.");
+    return this.withClient(async (client) => {
+      if (!client.append) throw new SafeError("UNSUPPORTED_OPERATION", "The configured IMAP provider does not support Sent APPEND.");
+      const folder = this.options.account.sentFolder;
+      const lock = await client.getMailboxLock(folder);
+      try {
+        const existing = await client.search({ header: { "Message-ID": context.messageIdHeader } }, { uid: true });
+        for (const uid of (Array.isArray(existing) ? existing : []).slice(0, this.maxResults)) {
+          const message = await client.fetchOne(uid, { uid: true, envelope: true }, { uid: true });
+          if (message && message.envelope?.messageId === context.messageIdHeader) return;
+        }
+        const appended = await client.append(folder, rawMime, ["\\Seen"]);
+        if (!appended) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the Sent append.");
+        let uid = typeof appended.uid === "number" && Number.isSafeInteger(appended.uid) && appended.uid > 0 ? appended.uid : undefined;
+        if (uid === undefined) {
+          const found = await client.search({ header: { "Message-ID": context.messageIdHeader } }, { uid: true });
+          const candidates = (Array.isArray(found) ? found : []).filter((value) => Number.isSafeInteger(value) && value > 0).slice(0, 2);
+          if (candidates.length !== 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return an unambiguous Sent UID.");
+          uid = candidates[0]!;
+        }
+        const confirmed = await client.fetchOne(uid, { uid: true, envelope: true, flags: true }, { uid: true });
+        if (!confirmed || confirmed.uid !== uid || confirmed.envelope?.messageId !== context.messageIdHeader || ![...(confirmed.flags ?? [])].some((flag) => flag.toLowerCase() === "\\seen")) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the exact Sent Message-ID and flag.");
+      } finally { lock.release(); }
+    });
+  }
   async appendDraft(rawMime: Buffer, folder: string, context: DraftAppendContext): Promise<DraftAppendResult> {
     if (context.accountId !== this.options.account.accountId || !/^<[^<>\r\n]+>$/.test(context.messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Draft append context is invalid for this account.");
     return this.withClient(async (client) => {

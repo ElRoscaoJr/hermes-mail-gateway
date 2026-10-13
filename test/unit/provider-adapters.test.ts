@@ -201,6 +201,64 @@ test("IMAP folder discovery excludes non-selectable namespaces", async () => {
   assert.deepEqual(await adapter.listFolders(), [{ path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "\\Junk" }]);
 });
 
+test("IMAP Sent APPEND uses configured folder, Seen flag, and verifies the exact Message-ID", async () => {
+  const header = "<sent-copy@example.test>";
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: header } } });
+  fake.flags.add("\\Seen");
+  let appended = false;
+  fake.search = async (query) => { fake.searches.push(query); return appended ? [7] : []; };
+  fake.append = async (path, content, flags) => {
+    assert.equal(path, "Archive/Sent-custom");
+    assert.equal(Buffer.from(content).toString(), "persisted raw MIME");
+    assert.deepEqual(flags, ["\\Seen"]);
+    appended = true;
+    return { destination: "Archive/Sent-custom", uid: 7, uidValidity: 1n };
+  };
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.appendSent(Buffer.from("persisted raw MIME"), { accountId: "acct", messageIdHeader: header });
+  assert.equal(appended, true);
+  assert.deepEqual(fake.locks, ["Archive/Sent-custom"]);
+  assert.deepEqual(fake.searches, [{ header: { "Message-ID": header } }]);
+});
+
+test("IMAP Sent APPEND refuses a cross-account context before opening a connection", async () => {
+  const fake = imapFake({});
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "other", messageIdHeader: "<id@example.test>" }), { code: "REFERENCE_INVALID" });
+  assert.deepEqual(fake.locks, []);
+});
+
+test("IMAP Sent APPEND does not duplicate an existing exact Message-ID", async () => {
+  const header = "<already-sent@example.test>";
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: header } } }, [7]);
+  let appends = 0;
+  fake.append = async () => { appends++; return { destination: "Archive/Sent-custom", uid: 8 }; };
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: header });
+  assert.equal(appends, 0);
+});
+
+test("IMAP Sent APPEND verifies an unambiguous provider UID when UIDPLUS is absent", async () => {
+  const header = "<uidless-sent@example.test>";
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: header } } });
+  fake.flags.add("\\Seen");
+  let appended = false;
+  fake.search = async (query) => { fake.searches.push(query); return appended ? [7] : []; };
+  fake.append = async () => { appended = true; return { destination: "Archive/Sent-custom" }; };
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: header });
+  assert.equal(appended, true);
+  assert.equal(fake.searches.length, 2);
+});
+
+test("IMAP Sent APPEND never claims success for a wrong Message-ID", async () => {
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: "<wrong@example.test>" } } }, []);
+  fake.flags.add("\\Seen");
+  fake.append = async () => ({ destination: "Archive/Sent-custom", uid: 7 });
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: "<wanted@example.test>" }), { code: "PROVIDER_UNAVAILABLE" });
+});
+
 test("IMAP draft APPEND sets the Draft flag, verifies Message-ID, and returns an opaque UID reference", async () => {
   const fake = imapFake({ "7": { uid: 7, envelope: { messageId: "<draft@example.test>" } } }, [7]);
   fake.flags.add("\\Draft");

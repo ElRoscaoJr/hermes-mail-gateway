@@ -21,6 +21,8 @@ It intentionally does not target Outlook, Microsoft Graph, EWS, Apple Mail, Mail
 
 The gateway must never blindly retry an SMTP operation whose delivery outcome is unknown. Every outgoing message receives a durable record and a Message-ID before SMTP is attempted. After an ambiguous outcome, the gateway verifies Sent before any user-approved resend.
 
+Sent-copy policy is explicit per account. `provider_managed` checks the provider's Sent folder and never adds a second copy (appropriate for providers that save one themselves). `gateway_append` is available only for generic IMAP/SMTP accounts whose SMTP submission does not save Sent: after SMTP acknowledges a message, the gateway first checks for an exact Message-ID in the configured Sent folder, then appends the **persisted raw MIME** once with `\\Seen` only if absent, and verifies the exact Message-ID. An ambiguous APPEND is reconciled by another exact lookup; if still unconfirmed, the outcome is non-retryable `SENT_UNVERIFIED`. An ambiguous SMTP outcome never triggers APPEND or a resend. Confirm the folder and provider behavior before selecting either policy.
+
 ## Project status
 
 The local runtime, all four MCP tools, multi-account configuration composition, bounded IMAP reads/searches, UIDVALIDITY-safe mailbox mutations, durable MIME preparation, To/CC/BCC routing, replies, forwarding, no-retry execution, exact Sent verification, provider-visible draft APPEND, draft preparation/cancellation, and redacted responses are implemented. Hermes/systemd activation remains separate.
