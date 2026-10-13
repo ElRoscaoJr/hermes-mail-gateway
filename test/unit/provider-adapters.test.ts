@@ -104,8 +104,17 @@ test("SMTP adapter maps cross-keychain credentials to Nodemailer auth options", 
   const transport = { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }) };
   const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transportFactory: (value) => { options = value; return transport; } });
   assert.deepEqual((await smtp.submit("<fixed@id>", Buffer.from("body"), envelope)).outcome, "ACKNOWLEDGED");
-  assert.deepEqual(options, { host: "smtp.example.test", port: 465, secure: true, auth: { user: "user", pass: "secret" } });
+  assert.deepEqual(options, { host: "smtp.example.test", port: 465, secure: true, requireTLS: false, auth: { user: "user", pass: "secret" } });
   assert.doesNotMatch(JSON.stringify(options), /username|password/);
+});
+
+test("SMTP 587 requires STARTTLS for submission and no-send verification", async () => {
+  const seen: unknown[] = [];
+  const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 587, secure: false, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transportFactory: (options) => { seen.push(options); return { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }), verify: async () => undefined }; } });
+  await smtp.verify();
+  assert.equal((await smtp.submit("<fixed@id>", Buffer.from("body"), envelope)).outcome, "ACKNOWLEDGED");
+  assert.equal(seen.length, 2);
+  for (const options of seen) assert.deepEqual(options, { host: "smtp.example.test", port: 587, secure: false, requireTLS: true, auth: { user: "user", pass: "secret" } });
 });
 
 test("local stream transport acknowledges raw submission with the explicit envelope", async () => {

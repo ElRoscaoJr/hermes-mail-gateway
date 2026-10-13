@@ -83,7 +83,7 @@ export class NodemailerSmtpAdapter implements SmtpAdapter {
     }
     if (!credential) return { outcome: "PRE_SUBMISSION_FAILURE", evidence: "credential_unavailable" };
     try {
-      const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, auth: { user: credential.username, pass: credential.password } };
+      const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, requireTLS: !this.options.secure, auth: { user: credential.username, pass: credential.password } };
       const transport = this.transport ?? (this.options.transportFactory ? this.options.transportFactory(transportOptions) : nodemailer.createTransport(transportOptions));
       const info = await transport.sendMail({ raw: Buffer.from(mime), envelope: { from: envelope.from, to: [...envelope.to], cc: [...envelope.cc], bcc: [...envelope.bcc] } });
       if (Array.isArray(info.rejected) && info.rejected.length > 0) return { outcome: "REJECTED", evidence: "provider_rejected" };
@@ -99,7 +99,7 @@ export class NodemailerSmtpAdapter implements SmtpAdapter {
   async verify(): Promise<void> {
     const credential = await this.options.credentials.get(this.options.credentialRef);
     if (!credential) throw new SafeError("PROVIDER_UNAVAILABLE", "The SMTP provider is unavailable.");
-    const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, auth: { user: credential.username, pass: credential.password } };
+    const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, requireTLS: !this.options.secure, auth: { user: credential.username, pass: credential.password } };
     const transport = this.transport ?? (this.options.transportFactory ? this.options.transportFactory(transportOptions) : nodemailer.createTransport(transportOptions));
     const verifiedTransport = transport as typeof transport & { verify?: () => Promise<unknown> };
     if (!verifiedTransport.verify) throw new SafeError("PROVIDER_UNAVAILABLE", "The SMTP provider is unavailable.");
