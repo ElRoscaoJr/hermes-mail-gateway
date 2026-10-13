@@ -25,6 +25,8 @@ Sent-copy policy is explicit per account. `provider_managed` checks the provider
 
 TLS is mandatory for both transports: `imaps://` uses implicit TLS, `imap://` requires STARTTLS before authentication (no plaintext fallback), `smtps://` uses implicit TLS, and `smtp://` requires STARTTLS. A failed/undefined IMAP SEARCH, missing candidate, or a lookup exceeding the configured verification bound is **not** proof of absence: Sent APPEND is refused rather than risking a duplicate.
 
+The pre-APPEND exact lookup and APPEND cannot be atomic against an **external IMAP client** adding a message with the same Message-ID at the same moment. Use one active send path for an account and keep Message-IDs unique; this policy prevents blind gateway retries but does not promise global exactly-once behavior across other writers.
+
 ## Project status
 
 The local runtime, all four MCP tools, multi-account configuration composition, bounded IMAP reads/searches, UIDVALIDITY-safe mailbox mutations, durable MIME preparation, To/CC/BCC routing, replies, forwarding, no-retry execution, exact Sent verification, provider-visible draft APPEND, draft preparation/cancellation, and redacted responses are implemented. Hermes/systemd activation remains separate.

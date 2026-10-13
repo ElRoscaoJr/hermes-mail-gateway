@@ -305,15 +305,18 @@ test("IMAP Sent APPEND never claims success for a wrong Message-ID", async () =>
   await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: "<wanted@example.test>" }), { code: "PROVIDER_UNAVAILABLE" });
 });
 
-test("IMAP failed SEARCH cannot authorize a Sent APPEND", async () => {
-  const fake = imapFake({});
-  let appends = 0;
-  fake.search = async () => false;
-  fake.append = async () => { appends++; return { destination: "Archive/Sent-custom", uid: 7 }; };
-  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "synthetic" }) }, clientFactory: () => fake });
-  await assert.rejects(adapter.verifySent("<wanted@example.test>"), { code: "PROVIDER_UNAVAILABLE" });
-  await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: "<wanted@example.test>" }), { code: "PROVIDER_UNAVAILABLE" });
-  assert.equal(appends, 0);
+test("IMAP failed or undefined SEARCH cannot authorize a Sent APPEND", async () => {
+  const searchResults: Array<false | undefined> = [false, undefined];
+  for (const searchResult of searchResults) {
+    const fake = imapFake({});
+    let appends = 0;
+    fake.search = async () => searchResult;
+    fake.append = async () => { appends++; return { destination: "Archive/Sent-custom", uid: 7 }; };
+    const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "synthetic" }) }, clientFactory: () => fake });
+    await assert.rejects(adapter.verifySent("<wanted@example.test>"), { code: "PROVIDER_UNAVAILABLE" });
+    await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: "<wanted@example.test>" }), { code: "PROVIDER_UNAVAILABLE" });
+    assert.equal(appends, 0);
+  }
 });
 
 test("IMAP partial HEADER matches beyond the bound cannot authorize a duplicate Sent APPEND", async () => {
