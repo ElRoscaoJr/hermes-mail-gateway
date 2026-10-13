@@ -96,4 +96,5 @@
 ## D-014 — Optional gateway-managed Sent for generic IMAP/SMTP
 - Decision: Retain `provider_managed` for providers that save their own Sent copies. Add opt-in `gateway_append` only for generic IMAP/SMTP accounts that do not; check for an exact Message-ID before APPEND, append immutable persisted MIME with `\\Seen` only after SMTP acknowledgment, and verify the exact Message-ID afterward. No SMTP or APPEND retry follows an ambiguous outcome.
 - Why: SMTP acknowledgment alone does not establish a provider-visible Sent copy on every generic server. The explicit policy preserves provider-managed no-duplicate behavior and the outbox's non-retry guarantee.
+- Security: `imap://` requires STARTTLS before authentication; `smtp://` also requires STARTTLS. A failed/undefined SEARCH or a candidate set beyond the configured bound fails closed instead of authorizing APPEND on incomplete evidence.
 - Supersedes: D-011's restriction to only `provider_managed`, but not its bounded health and query rules.

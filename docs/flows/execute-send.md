@@ -22,6 +22,7 @@ Hermes invokes `mail_execute` for a durable `PREPARED` gateway message.
 - Failure before SMTP submission is proven: preserve an executable state only when the adapter proves no submission occurred.
 - Connection loss after possible submission: persist `OUTCOME_UNKNOWN`; stop and require the ambiguous-outcome flow.
 - Provider accepted but exact Sent verification fails: persist `SENT_UNVERIFIED`; do not retry SMTP or an ambiguous APPEND automatically. `gateway_append` only appends after SMTP acknowledgment and a negative pre-append exact lookup.
+- An IMAP SEARCH failure, missing candidate, or more partial header matches than the safe verification bound is not a negative lookup: refuse APPEND and leave the acknowledged send `SENT_UNVERIFIED` for operator reconciliation.
 
 ```mermaid
 flowchart TD
