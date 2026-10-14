@@ -229,10 +229,10 @@ export class MailGatewayService implements MailApplicationService {
         const expanded: unknown[] = [];
         for (const summary of messages) {
           if (!Number.isSafeInteger(summary.size) || summary.size! < 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return verifiable message sizes for this thread.");
-          totalBytes += summary.size!;
-          if (totalBytes > this.maxThreadBytes) throw new SafeError("THREAD_TOO_LARGE", "The combined thread bodies exceed the configured read bound.");
           const message = await safeProviderCall(() => imap.read!(summary.reference));
-          if (message.size !== summary.size) throw new SafeError("PROVIDER_UNAVAILABLE", "A thread message changed while it was being read; retry the query.");
+          if (!Number.isSafeInteger(message.size) || message.size! < 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return a verified message size.");
+          totalBytes += message.size!;
+          if (!Number.isSafeInteger(totalBytes) || totalBytes > this.maxThreadBytes) throw new SafeError("THREAD_TOO_LARGE", "The combined thread bodies exceed the configured read bound.");
           expanded.push(publicThreadMessage(message));
         }
         value = { scope, complete: true, messages: expanded };
