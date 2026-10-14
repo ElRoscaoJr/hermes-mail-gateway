@@ -121,3 +121,11 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 - [x] Fake-provider coverage verifies `\\Draft`, exact Message-ID, provider UID/UIDVALIDITY, mailbox locking, missing/ambiguous UID failure, repeat idempotency, cancellation, account isolation, and redacted MCP output.
 - [x] An exception after APPEND begins leaves durable verification-required state and a second call performs no APPEND.
 - [x] Final local verification: `npm run typecheck`, `npm test`, `npm run build`, offline high-severity audit, and `git diff --check` pass with 87 tests and 0 failures; no provider was contacted and no mail was sent.
+
+## Slice 12 — attachment size semantics and bounded large-mailbox thread search
+
+- [x] IMAP `BODYSTRUCTURE` octets are exposed as `encodedSize`; metadata-only listings no longer mislabel them as decoded `size`.
+- [x] Parsed/downloaded attachment `size` remains decoded octets; service and MCP integration tests verify the metadata projection carries `encodedSize` without exposing content or inventing a decoded size.
+- [x] Thread header searches use up to 65,536 UIDs per window with the existing 512-window total budget and candidate/result caps; criteria remain separate and tests cover reduced serial searches plus cap failures.
+- [x] Typecheck and full unit/integration suite pass (250 tests, 0 failures); production dependency audit reports 0 vulnerabilities; compiled `hermes mcp test hermes-mail-gateway` discovers exactly four tools; `git diff --check` passes.
+- [ ] Post-change live-provider verification remains pending an MCP reload. No email was sent and no mailbox was mutated.

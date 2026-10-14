@@ -222,10 +222,11 @@ test("mailQuery read exposes only message bodies and attachment metadata", async
 
 test("mailQuery returns bounded attachment metadata and thread summaries", async () => {
   const base = fixture();
-  const first = new FakeMailboxAdapter("first", true, { attachments: [{ filename: "folder\\invoice?.pdf", contentType: "invalid/type\\r\\nX-Evil: value", size: 12, content: Buffer.from("secret bytes") }] });
+  const listedAttachment = Object.assign({ filename: "folder\\invoice?.pdf", contentType: "invalid/type\\r\\nX-Evil: value", size: 12, content: Buffer.from("secret bytes") }, { encodedSize: 16 });
+  const first = new FakeMailboxAdapter("first", true, { attachments: [listedAttachment] });
   const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: first, smtp: new FakeSmtpAdapter() }]]));
   const attachments = await service.mailQuery({ accountId: "acct", operation: "attachments", messageReference: "ref-1", limit: 1 }, context);
-  assert.deepEqual(attachments, { attachments: [{ filename: "invoice_.pdf", contentType: "application/octet-stream", size: 12 }] });
+  assert.deepEqual(attachments, { attachments: [{ filename: "invoice_.pdf", contentType: "application/octet-stream", size: 12, encodedSize: 16 }] });
   assert.deepEqual(first.calls, ["attachments:ref-1"]);
   assert.doesNotMatch(JSON.stringify(attachments), /secret bytes|"content"/i);
   const thread = await service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "ref-1", limit: 1 }, context);

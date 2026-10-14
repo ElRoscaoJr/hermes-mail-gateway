@@ -105,3 +105,17 @@
 - Why: Disposition and filename conventions vary across providers; rejecting them produced false negatives for legitimate attachments.
 - Security boundary: Keep exact UID/UIDVALIDITY binding, raw-octet verification, strict base64 padding and quoted-printable syntax checks, exact decoded-length verification, size bounds, and SHA-256. The gateway does not execute attachments or write them to arbitrary filesystem paths.
 - Supersedes: none
+
+## D-016 — Distinguish encoded and decoded attachment sizes
+- Date / phase: 2026-10-14 / Phase 5
+- Decision: Metadata-only attachment listings expose optional `encodedSize` from IMAP BODYSTRUCTURE. `size` is reserved for decoded attachment bytes in parsed reads and explicit downloads.
+- Why: Transfer encoding makes the provider's raw MIME part length differ from the usable file length; metadata should not imply that encoded octets are file bytes, and the listing must not download all attachment contents merely to estimate decoded sizes.
+- Security boundary: Keep metadata listing body-free; explicit downloads retain the existing UID/UIDVALIDITY, raw-byte, decoded-length, size, and SHA-256 checks.
+- Supersedes: none
+
+## D-017 — Use larger bounded UID windows for thread header search
+- Date / phase: 2026-10-14 / Phase 5
+- Decision: Keep header criteria independent for provider compatibility, but use at most 65,536 UIDs per thread search window with the existing 512-window total budget and candidate/result caps.
+- Why: 1,024-UID windows generated excessive serial IMAP SEARCH round trips in large Gmail mailboxes and caused thread lookups to time out.
+- Security boundary: Preserve UID-range validation, per-window result bounds, duplicate rejection, and fail-closed behavior when the scan/candidate/result budget is exceeded.
+- Supersedes: none

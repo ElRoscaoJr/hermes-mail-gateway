@@ -37,3 +37,9 @@ safeAttachmentContentType("application/pdf\r\nX-Evil: value"); // "application/o
 ```
 
 These helpers normalize metadata only; they do not decode, store, or execute attachment bytes. Download authorization, UID/UIDVALIDITY checks, supported transfer encodings, byte verification, hashing, and size bounds remain enforced by the adapter.
+
+## Size semantics
+
+- `mail_query(operation: "attachments")` without `attachmentIndex` is metadata-only. Its optional `encodedSize` is the raw transfer-encoded MIME part length announced by IMAP `BODYSTRUCTURE`; Base64 or quoted-printable overhead means it can differ from the decoded file size.
+- A parsed `read`/thread attachment and an explicit selected download use `size` for decoded file octets. Download `size` matches the decoded `contentBase64` bytes; `sha256` is calculated over those decoded bytes.
+- Metadata listing does not fetch attachment contents to estimate decoded size. Consumers must not use `encodedSize` as a decoded-size estimate for the file.

@@ -549,7 +549,7 @@ test("IMAP exact Sent lookup bounds candidate enumeration by UID range", async (
   assert.equal(fake.searches[0]?.uid, "1:99");
 });
 
-test("IMAP thread bounds UID search windows before enforcing its candidate limit", async () => {
+test("IMAP thread enforces candidate limits instead of returning a partial conversation", async () => {
   const uids = Array.from({ length: 500 }, (_, index) => index + 1);
   const messages = Object.fromEntries(uids.map((uid) => [String(uid), { uid, envelope: { messageId: uid === 1 ? "<anchor@example.test>" : `<child-${uid}@example.test>` } }]));
   const fake = imapFake(messages, (query) => {
@@ -565,6 +565,21 @@ test("IMAP thread bounds UID search windows before enforcing its candidate limit
   const searchesBeforeThread = fake.searches.length;
   await assert.rejects(adapter.thread("INBOX-custom", reference, 10), { code: "THREAD_TOO_LARGE" });
   assert.equal(fake.searches[searchesBeforeThread]?.uid, "1:500");
+});
+
+test("IMAP thread uses large bounded UID windows to reduce serial searches", async () => {
+  const fake = imapFake({ "1": { uid: 1, source: Buffer.from("Message-ID: <anchor@example.test>\\r\\n\\r\\nbody"), envelope: { messageId: "<anchor@example.test>" } } }, (query) => {
+    const range = typeof query.uid === "string" ? /^(\\d+):(\\d+)$/.exec(query.uid) : undefined;
+    const includesAnchor = range != null && Number(range[1]) <= 1 && Number(range[2]) >= 1;
+    return query.header?.["Message-ID"] === "<anchor@example.test>" && includesAnchor ? [1] : [];
+  });
+  (fake.mailbox as { uidValidity: bigint; uidNext: number }).uidNext = 5_001;
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "synthetic" }) }, clientFactory: () => fake });
+  const reference = Buffer.from(JSON.stringify({ accountId: "acct", folder: "INBOX-custom", uid: 1, uidValidity: 1 }), "utf8").toString("base64url");
+  const result = await adapter.thread("INBOX-custom", reference, 10, "currentFolder");
+  assert.equal(result.length, 1);
+  assert.equal(fake.searches.length, 3);
+  assert.deepEqual(fake.searches.map((query) => query.uid), ["1:5000", "1:5000", "1:5000"]);
 });
 
 test("IMAP thread search fails rather than returning a silently truncated conversation", async () => {

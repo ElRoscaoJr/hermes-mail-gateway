@@ -84,3 +84,17 @@
 - Working solution: Permit explicitly selected inline/Content-ID parts, reduce filenames to a sanitized basename with a deterministic fallback, and map invalid media types to `application/octet-stream`.
 - Rule for next time: Keep UID, raw-octet, canonical transfer-syntax, decoded-length, hash, and size checks strict; sanitize metadata instead of rejecting content solely because a provider supplied an unusual name or disposition. Unknown transfer encodings remain unsupported until a verified decoder exists.
 - Regression coverage: `test/unit/attachment-hardening.test.ts` and `test/integration/application-service.test.ts`.
+
+## L-013 — Name provider-encoded attachment sizes explicitly
+- Problem: IMAP BODYSTRUCTURE octets differ from decoded attachment bytes, so exposing both as `size` creates a false mismatch.
+- Where: Metadata-only `attachments` queries versus explicit downloads and parsed `read` attachments.
+- Working solution: Return the provider's raw transfer-encoded length as `encodedSize`; reserve `size` for decoded file bytes. Do not fetch all attachment bodies solely to estimate decoded sizes.
+- Rule for next time: State the byte domain in field names and docs; compare download base64 only to decoded `size`, never to `encodedSize`.
+- Regression coverage: `test/unit/attachment-hardening.test.ts`, `test/integration/application-service.test.ts`.
+
+## L-014 — Keep thread UID scans bounded without excessive round trips
+- Problem: Repeating a header search for every 1,024-UID range across several criteria and folders caused slow large-mailbox thread lookups.
+- Where: IMAP thread discovery from Message-ID, In-Reply-To, and References.
+- Working solution: Use larger 65,536-UID thread windows while retaining the total window, candidate, and result bounds; keep header criteria separate for provider compatibility.
+- Rule for next time: Optimize the number of server round trips without removing UID-range validation or fail-closed limits; regression-test both reduced calls and candidate-cap behavior.
+- Regression coverage: `test/unit/provider-adapters.test.ts`.

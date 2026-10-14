@@ -10,7 +10,7 @@ test("MCP exposes exactly four tools and rejects invalid public input", async ()
   const calls: string[] = [];
   const service: MailApplicationService = {
     mailAccounts: () => ({ accounts: [{ accountId: "acct", credentialRef: "keychain:private" }] }),
-    mailQuery: (input) => input.operation === "folders" ? { folders: [{ path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All", rawProviderResponse: "password=must-not-escape" }] } : input.operation === "attachments" ? (input.attachmentIndex === undefined ? { attachments: [{ filename: "secret.bin", contentType: "application/octet-stream", size: 14, content: Buffer.from("attachment bytes") }], rawMime: Buffer.from("raw mime") } : { attachment: { filename: "safe.bin", contentType: "application/octet-stream", size: 14, sha256: "a".repeat(64), contentBase64: Buffer.from("attachment bytes").toString("base64"), rawMime: Buffer.from("raw mime") } }) : { messages: [] },
+    mailQuery: (input) => input.operation === "folders" ? { folders: [{ path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All", rawProviderResponse: "password=must-not-escape" }] } : input.operation === "attachments" ? (input.attachmentIndex === undefined ? { attachments: [{ filename: "secret.bin", contentType: "application/octet-stream", encodedSize: 18, content: Buffer.from("attachment bytes") }], rawMime: Buffer.from("raw mime") } : { attachment: { filename: "safe.bin", contentType: "application/octet-stream", size: 14, sha256: "a".repeat(64), contentBase64: Buffer.from("attachment bytes").toString("base64"), rawMime: Buffer.from("raw mime") } }) : { messages: [] },
     mailPrepare: (input) => { calls.push(`prepare:${input.accountId}`); return { state: "PREPARED", accountId: input.accountId, bcc: ["hidden@example.test"], attachments: [{ filename: "secret.bin", content: Buffer.from("attachment bytes") }], rawMime: Buffer.from("From: secret@example.test\r\n\r\nbody") }; },
     mailExecute: (input) => {
       if (input.accountId !== "acct") throw new SafeError("ACCOUNT_NOT_FOUND", "Account was not found.");
@@ -42,6 +42,9 @@ test("MCP exposes exactly four tools and rejects invalid public input", async ()
 
   const attachments = await client.callTool({ name: "mail_query", arguments: { accountId: "acct", operation: "attachments", messageReference: "opaque-ref" } });
   assert.doesNotMatch(JSON.stringify(attachments.structuredContent), /attachment bytes|raw mime|"content":/i);
+  const listedAttachment = (attachments.structuredContent as { value: { attachments: Record<string, unknown>[] } }).value.attachments[0]!;
+  assert.equal(listedAttachment.encodedSize, 18);
+  assert.equal("size" in listedAttachment, false);
   const download = await client.callTool({ name: "mail_query", arguments: { accountId: "acct", operation: "attachments", messageReference: "opaque-ref", attachmentIndex: 0 } });
   assert.match(JSON.stringify(download.structuredContent), /contentBase64/);
   assert.doesNotMatch(JSON.stringify(download.structuredContent), /raw mime|"content":/i);

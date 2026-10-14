@@ -105,8 +105,17 @@ test("explicit inline Content-ID attachments are downloadable", async () => {
   assert.equal(result.content.toString("ascii"), "abc");
 });
 
+test("attachment metadata names raw BODYSTRUCTURE octets encodedSize, not decoded size", async () => {
+  const f = fixture(Buffer.from("YWJj"));
+  const metadata = await f.adapter.listAttachments(reference);
+  const entry = metadata[0] as unknown as { filename?: string; encodedSize?: number; size?: number };
+  assert.equal(entry?.filename, "data.bin");
+  assert.equal(entry?.encodedSize, 4);
+  assert.equal(entry?.size, undefined);
+});
+
 test("attachment metadata uses the same sanitized name and content type", async () => {
-  const f = fixture(Buffer.from("YWJj"), { type: "invalid/type\\r\\nX-Evil: value", disposition: "inline", dispositionParameters: { filename: "folder\\invoice?.pdf" }, id: "<invoice@example.test>" });
+  const f = fixture(Buffer.from("YWJj"), { type: "invalid/type\\r\\nX-Evil: value", disposition: "inline", dispositionParameters: { filename: "folder\\\\invoice?.pdf" }, id: "<invoice@example.test>" });
   const metadata = await f.adapter.listAttachments(reference);
   assert.equal(metadata[0]?.filename, "invoice_.pdf");
   assert.equal(metadata[0]?.contentType, "application/octet-stream");

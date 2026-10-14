@@ -204,7 +204,7 @@ export class MailGatewayService implements MailApplicationService {
       } else {
         if (imap.listAttachments) {
           const attachments = await safeProviderCall(() => imap.listAttachments!(input.messageReference!));
-          value = { attachments: attachments.slice(0, 32).map(({ filename, contentType, size }, index) => ({ filename: safeAttachmentFilename(filename, index), contentType: safeAttachmentContentType(contentType), ...(size === undefined ? {} : { size }) })) };
+          value = { attachments: attachments.slice(0, 32).map(({ filename, contentType, size, encodedSize }, index) => ({ filename: safeAttachmentFilename(filename, index), contentType: safeAttachmentContentType(contentType), ...(size === undefined ? {} : { size }), ...(encodedSize === undefined ? {} : { encodedSize }) })) };
         } else {
           if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support attachment metadata.");
           const message = await safeProviderCall(() => imap.read!(input.messageReference!));

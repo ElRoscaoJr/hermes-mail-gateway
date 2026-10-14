@@ -118,7 +118,7 @@ export interface MailFolder { readonly path: string; readonly name: string; read
 export interface MailAddress { readonly name?: string | undefined; readonly address?: string | undefined; }
 export interface MailForwardMetadata { readonly originalMessageReference?: string | undefined; readonly originalMessageId?: string | undefined; readonly originalSubject?: string | undefined; }
 export interface MailSummary { readonly reference: string; readonly folder: string; readonly uid: number; /** Internal cursor/reference binding; removed at the MCP boundary. */ readonly uidValidity?: number; readonly subject?: string | undefined; readonly messageId?: string | undefined; readonly date?: string | undefined; readonly from: readonly MailAddress[]; readonly to: readonly MailAddress[]; readonly cc: readonly MailAddress[]; readonly replyTo?: readonly MailAddress[] | undefined; readonly inReplyTo?: string | undefined; readonly references?: readonly string[] | undefined; readonly forwarding?: MailForwardMetadata | undefined; readonly size?: number | undefined; readonly flags: readonly string[]; }
-export interface MailAttachment { readonly filename?: string; readonly contentType?: string; readonly size?: number; readonly content?: Buffer; readonly disposition?: string; readonly contentId?: string; }
+export interface MailAttachment { readonly filename?: string; readonly contentType?: string; /** Decoded file octets when bytes have been parsed or downloaded. */ readonly size?: number; /** Raw transfer-encoded MIME part octets when available from metadata-only listing. */ readonly encodedSize?: number; readonly content?: Buffer; readonly disposition?: string; readonly contentId?: string; }
 export interface MailMessage extends MailSummary { readonly text?: string | undefined; readonly html?: string | undefined; readonly attachments: readonly MailAttachment[]; }
 export interface MailSearchPage { readonly messages: readonly MailSummary[]; readonly truncated: boolean; readonly foldersSearched: number; readonly nextCursor?: string; }
 export interface ImapFlowClient { connect(): Promise<void>; logout(): Promise<void>; close(): void; list(): Promise<ListResponse[]>; getMailboxLock(path: string): Promise<{ release(): void }>; append?(path: string | string[], content: string | Buffer, flags?: string[], idate?: Date | string): Promise<{ destination: string; uidValidity?: bigint | number | undefined; uid?: number | undefined; seq?: number | undefined } | false>; search(query: SearchObject, options?: { uid?: boolean }): Promise<number[] | false | undefined>; download?(range: string | number, part?: string, options?: { uid?: boolean; maxBytes?: number; chunkSize?: number }): Promise<DownloadObject>; fetch(range: string | number[], query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; bodyStructure?: boolean; source?: { start?: number; maxLength: number } }, options?: { uid?: boolean }): AsyncGenerator<FetchMessageObject, false | void, undefined>; fetchOne(seq: string | number, query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; bodyStructure?: boolean; headers?: boolean | string[]; bodyParts?: Array<string | { key: string; start?: number; maxLength?: number }>; source?: { start?: number; maxLength: number } }, options?: { uid?: boolean }): Promise<FetchMessageObject | false | undefined>; messageFlagsAdd?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageFlagsRemove?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageMove?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | { uidMap?: Map<number, number> | undefined; uidValidity?: bigint | number | undefined } | false | undefined>; messageCopy?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | { uidMap?: Map<number, number> | undefined; uidValidity?: bigint | number | undefined } | false | undefined>; }
@@ -242,14 +242,14 @@ function safeForwarding(headers: Map<string, unknown> | undefined): MailForwardM
   return { ...(originalMessageReference === undefined ? {} : { originalMessageReference }), ...(originalMessageId === undefined ? {} : { originalMessageId }), ...(originalSubject === undefined ? {} : { originalSubject }) };
 }
 function mapError(error: unknown): never { if (error instanceof SafeError) throw error; throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider is unavailable."); }
-interface AttachmentPart { readonly part: string; readonly filename?: string; readonly contentType: string; readonly encoding?: string; readonly size?: number; readonly disposition?: string; readonly contentId?: string; }
+interface AttachmentPart { readonly part: string; readonly filename?: string; readonly contentType: string; readonly encoding?: string; readonly encodedSize?: number; readonly disposition?: string; readonly contentId?: string; }
 function attachmentParts(structure: MessageStructureObject): AttachmentPart[] {
   const result: AttachmentPart[] = [];
   const visit = (node: MessageStructureObject): void => {
     if (node.childNodes?.length) { for (const child of node.childNodes) visit(child); return; }
     const filename = node.dispositionParameters?.filename ?? node.parameters?.name;
     if (!node.part || (node.disposition?.toLowerCase() !== "attachment" && !filename && !node.id)) return;
-    result.push({ part: node.part, ...(filename === undefined ? {} : { filename }), contentType: node.type, ...(node.encoding === undefined ? {} : { encoding: node.encoding }), ...(node.size === undefined ? {} : { size: node.size }), ...(node.disposition === undefined ? {} : { disposition: node.disposition }), ...(node.id === undefined ? {} : { contentId: node.id }) });
+    result.push({ part: node.part, ...(filename === undefined ? {} : { filename }), contentType: node.type, ...(node.encoding === undefined ? {} : { encoding: node.encoding }), ...(node.size === undefined ? {} : { encodedSize: node.size }), ...(node.disposition === undefined ? {} : { disposition: node.disposition }), ...(node.id === undefined ? {} : { contentId: node.id }) });
   };
   visit(structure);
   return result.slice(0, 32);
@@ -259,6 +259,7 @@ const IMAP_UID_MAX = 0xffff_ffff;
 const IMAP_UID_WINDOW_SIZE = 1_024;
 const IMAP_UID_SEARCH_WINDOW_BUDGET = 128;
 const IMAP_ALL_FOLDER_SEARCH_WINDOW_BUDGET = 512;
+const IMAP_THREAD_UID_WINDOW_SIZE = 65_536;
 
 /** Provider-independent, bounded IMAP operations. No reconnect or retry is performed. */
 export class ImapFlowMailAdapter implements ImapAdapter {
@@ -287,15 +288,15 @@ export class ImapFlowMailAdapter implements ImapAdapter {
     return raw;
   }
 
-  private async searchUidsInWindows(client: ImapFlowClient, criteria: SearchObject, startUid: number, uidNext: number, maxResults: number, budget: { remaining: number }): Promise<number[]> {
-    if (!Number.isSafeInteger(startUid) || startUid < 1 || startUid > IMAP_UID_MAX + 1 || !Number.isSafeInteger(maxResults) || maxResults < 1) throw new SafeError("INVALID_INPUT", "The mailbox search range is invalid.");
+  private async searchUidsInWindows(client: ImapFlowClient, criteria: SearchObject, startUid: number, uidNext: number, maxResults: number, budget: { remaining: number }, windowSize = IMAP_UID_WINDOW_SIZE): Promise<number[]> {
+    if (!Number.isSafeInteger(startUid) || startUid < 1 || startUid > IMAP_UID_MAX + 1 || !Number.isSafeInteger(maxResults) || maxResults < 1 || !Number.isSafeInteger(windowSize) || windowSize < 1 || windowSize > IMAP_THREAD_UID_WINDOW_SIZE) throw new SafeError("INVALID_INPUT", "The mailbox search range is invalid.");
     const lastUid = uidNext - 1;
     const result: number[] = [];
     let lower = startUid;
     while (lower <= lastUid && result.length < maxResults) {
       if (budget.remaining <= 0) throw new SafeError("QUERY_TOO_LARGE", "The mailbox search exceeded its bounded UID scan; narrow the query.");
       budget.remaining -= 1;
-      const upper = Math.min(lastUid, lower + IMAP_UID_WINDOW_SIZE - 1);
+      const upper = Math.min(lastUid, lower + windowSize - 1);
       const found = await client.search({ ...criteria, uid: `${lower}:${upper}` }, { uid: true });
       if (!Array.isArray(found)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an incomplete mailbox search result.");
       if (found.length > upper - lower + 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned too many mailbox UIDs for a bounded range.");
@@ -550,7 +551,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
       const message = await client.fetchOne(target.uid, { uid: true, size: true, bodyStructure: true }, { uid: true });
       if (!message) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found.");
       if (!message.bodyStructure) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return message attachment metadata.");
-      return attachmentParts(message.bodyStructure).map((item, index) => ({ filename: safeAttachmentFilename(item.filename, index), contentType: safeAttachmentContentType(item.contentType), ...(Number.isSafeInteger(item.size) && item.size! >= 0 ? { size: item.size } : {}), ...(item.disposition === undefined ? {} : { disposition: item.disposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }) }));
+      return attachmentParts(message.bodyStructure).map((item, index) => ({ filename: safeAttachmentFilename(item.filename, index), contentType: safeAttachmentContentType(item.contentType), ...(Number.isSafeInteger(item.encodedSize) && item.encodedSize! >= 0 ? { encodedSize: item.encodedSize } : {}), ...(item.disposition === undefined ? {} : { disposition: item.disposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }) }));
     } finally { lock.release(); } });
   }
 
@@ -569,7 +570,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
       const filename = safeAttachmentFilename(item.filename, attachmentIndex); const contentType = safeAttachmentContentType(item.contentType);
       const encoding = (item.encoding ?? "binary").toLowerCase();
       if (!["base64", "quoted-printable", "7bit", "8bit", "binary"].includes(encoding)) throw new SafeError("UNSUPPORTED_OPERATION", "The attachment transfer encoding is unsupported.");
-      const raw = await this.verifyRawAttachmentPart(client, target.uid, item.part, item.size ?? Number.NaN);
+      const raw = await this.verifyRawAttachmentPart(client, target.uid, item.part, item.encodedSize ?? Number.NaN);
       const expectedDecodedSize = expectedDecodedAttachmentSize(raw, encoding);
       if (expectedDecodedSize > this.maxAttachmentDownloadBytes) throw new SafeError("ATTACHMENT_TOO_LARGE", "The attachment exceeds the configured download bound.");
       // Force a single opaque attachment so mailparser does not transform text or interpret nested MIME.
@@ -692,7 +693,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
           ]);
           for (const criterion of criteria) {
             let found: number[];
-            try { found = await this.searchUidsInWindows(client, criterion, 1, uidNext, candidateLimit + 1, searchBudget); }
+            try { found = await this.searchUidsInWindows(client, criterion, 1, uidNext, candidateLimit + 1, searchBudget, IMAP_THREAD_UID_WINDOW_SIZE); }
             catch (error) {
               if (error instanceof SafeError && error.code === "QUERY_TOO_LARGE") throw new SafeError("THREAD_TOO_LARGE", "The thread search exceeded its bounded UID scan.");
               throw error;
