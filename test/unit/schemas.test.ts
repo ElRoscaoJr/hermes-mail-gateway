@@ -20,6 +20,18 @@ test("attachment download mode is bounded and rejects misplaced indexes", () => 
   assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "attachments", messageReference: "ref", attachmentIndex: 32 }).success, false);
   assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "read", messageReference: "ref", attachmentIndex: 0 }).success, false);
 });
+test("thread query exposes explicit cross-folder scope and optional message bodies", () => {
+  const base = { accountId: "acct", operation: "thread", messageReference: "opaque-ref" };
+  assert.deepEqual(mailQuerySchema.parse(base), { ...base, threadScope: "allFolders", includeBodies: false, searchScope: "currentFolder", limit: 20 });
+  assert.equal(mailQuerySchema.safeParse({ ...base, threadScope: "currentFolder", includeBodies: true }).success, true);
+  assert.equal(mailQuerySchema.safeParse({ accountId: "acct", operation: "read", messageReference: "opaque-ref", includeBodies: true }).success, false);
+});
+test("search query exposes an explicit all-folder scope and rejects it on other operations", () => {
+  const base = { accountId: "acct", operation: "search", query: "invoice" };
+  assert.equal(mailQuerySchema.parse(base).searchScope, "currentFolder");
+  assert.equal(mailQuerySchema.safeParse({ ...base, searchScope: "allFolders" }).success, true);
+  assert.equal(mailQuerySchema.safeParse({ accountId: "acct", operation: "list", searchScope: "allFolders" }).success, false);
+});
 test("gateway-managed Sent copies are allowed only for generic IMAP/SMTP", () => {
   const valid = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX", sentFolder: "Sent" };
   assert.equal(accountConfigSchema.safeParse(valid).success, true);
@@ -29,9 +41,17 @@ test("gateway-managed Sent copies are allowed only for generic IMAP/SMTP", () =>
 });
 test("configuration supplies bounded operational query and read defaults", () => {
   const result = serverConfigSchema.parse({ databasePath: "/tmp/mail.db", attachmentRoots: [], accounts: [], limits: { maxRecipients: 10, maxAttachmentBytes: 1_000_000 } });
-  assert.deepEqual(result.limits, { maxRecipients: 10, maxAttachmentBytes: 1_000_000, maxQueryResults: 50, maxReadBytes: 1_000_000 });
-  assert.equal(serverConfigSchema.safeParse({ databasePath: "/tmp/mail.db", attachmentRoots: [], accounts: [], limits: { maxRecipients: 10, maxAttachmentBytes: 1_000_000, maxQueryResults: 101, maxReadBytes: 10_000_001 } }).success, false);
+  assert.deepEqual(result.limits, { maxRecipients: 10, maxAttachmentBytes: 1_000_000, maxQueryResults: 50, maxReadBytes: 1_000_000, maxAttachmentDownloadBytes: 10_000_000 });
+  assert.equal(serverConfigSchema.safeParse({ databasePath: "/tmp/mail.db", attachmentRoots: [], accounts: [], limits: { maxRecipients: 10, maxAttachmentBytes: 1_000_000, maxQueryResults: 101, maxReadBytes: 10_000_001, maxAttachmentDownloadBytes: 25_000_001 } }).success, false);
 });
+test("draft preparation accepts no recipients while send preparation still requires one", () => {
+  const base = { accountId: "acct", idempotencyKey: "idem-123456", subject: "Working draft" };
+  assert.equal(mailPrepareSchema.safeParse({ ...base, intent: "draft" }).success, true);
+  assert.equal(mailPrepareSchema.safeParse(base).success, false);
+  assert.equal(mailPrepareSchema.safeParse({ ...base, intent: "draft", recipients: [] }).success, true);
+  assert.equal(mailPrepareSchema.safeParse({ ...base, recipients: [], cc: ["cc@example.test"] }).success, true);
+});
+
 test("preparation sender is optional at the boundary because the account supplies it", () => { const parsed = mailPrepareSchema.safeParse({ accountId: "acct", idempotencyKey: "idem-123456", recipients: ["recipient@example.test"], subject: "x" }); assert.equal(parsed.success, true); });
 test("attachment manifests require a declared size", () => { const valid = { path: "/tmp/file.txt", size: 4, sha256: "a".repeat(64), contentType: "text/plain" }; assert.equal(mailPrepareSchema.safeParse({ accountId: "acct", idempotencyKey: "idem-123456", recipients: ["recipient@example.test"], subject: "x", attachments: [valid] }).success, true); const missingSize = { ...valid }; delete (missingSize as { size?: number }).size; assert.equal(mailPrepareSchema.safeParse({ accountId: "acct", idempotencyKey: "idem-123456", recipients: ["recipient@example.test"], subject: "x", attachments: [missingSize] }).success, false); });
 test("prepare schema strictly validates routing, reply, and forwarding metadata", () => {

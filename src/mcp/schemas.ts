@@ -20,15 +20,17 @@ export const mailSearchFiltersSchema = z.strictObject({
 const recipientList = z.array(z.string().email()).max(100).default([]);
 const queryOperation = z.enum(["folders", "list", "search", "read", "thread", "attachments", "verifySent"]);
 export const mailAccountsSchema = z.strictObject({ includeHealth: z.boolean().default(true) });
-export const mailQuerySchema = z.strictObject({ accountId: id, operation: queryOperation, folder: z.string().min(1).max(200).optional(), query: z.string().max(1000).optional(), search: mailSearchFiltersSchema.optional(), messageReference: z.union([id, messageIdHeader]).optional(), attachmentIndex: z.number().int().min(0).max(31).optional(), cursor: z.string().max(500).optional(), limit: z.number().int().min(1).max(100).default(20) }).superRefine((value, context) => {
+export const mailQuerySchema = z.strictObject({ accountId: id, operation: queryOperation, folder: z.string().min(1).max(200).optional(), query: z.string().max(1000).optional(), search: mailSearchFiltersSchema.optional(), messageReference: z.union([id, messageIdHeader]).optional(), attachmentIndex: z.number().int().min(0).max(31).optional(), threadScope: z.enum(["currentFolder", "allFolders"]).default("allFolders"), includeBodies: z.boolean().default(false), searchScope: z.enum(["currentFolder", "allFolders"]).default("currentFolder"), cursor: z.string().max(1_024).optional(), limit: z.number().int().min(1).max(100).default(20) }).superRefine((value, context) => {
   if (value.search !== undefined && value.operation !== "search") context.addIssue({ code: "custom", path: ["search"], message: "Structured search filters are valid only for search." });
   if (value.attachmentIndex !== undefined && value.operation !== "attachments") context.addIssue({ code: "custom", path: ["attachmentIndex"], message: "attachmentIndex is valid only for attachment queries." });
+  if ((value.threadScope !== "allFolders" || value.includeBodies) && value.operation !== "thread") context.addIssue({ code: "custom", path: ["threadScope"], message: "Thread scope and body options are valid only for thread queries." });
+  if (value.searchScope !== "currentFolder" && value.operation !== "search") context.addIssue({ code: "custom", path: ["searchScope"], message: "Search scope is valid only for search queries." });
 });
 export const mailPrepareSchema = z.strictObject({
   accountId: id,
   intent: z.enum(["send", "draft"]).default("send"),
   idempotencyKey: z.string().min(8).max(200),
-  recipients: z.array(z.string().email()).min(1).max(100),
+  recipients: recipientList,
   cc: recipientList,
   bcc: recipientList,
   replyTo: z.string().email().optional(),
@@ -43,6 +45,8 @@ export const mailPrepareSchema = z.strictObject({
   textBody: z.string().max(1_000_000).optional(),
   htmlBody: z.string().max(1_000_000).optional(),
   attachments: z.array(z.strictObject({ path: z.string().min(1).max(4096), size: z.number().int().nonnegative().max(25_000_000), sha256: z.string().regex(/^[a-f0-9]{64}$/), contentType: z.string().max(128) })).max(32).default([]),
+}).superRefine((value, context) => {
+  if (value.intent === "send" && value.recipients.length + value.cc.length + value.bcc.length === 0) context.addIssue({ code: "custom", path: ["recipients"], message: "Send requires at least one recipient in To, CC, or BCC." });
 });
 const mailboxReference = z.string().min(1).max(500);
 const mutationAction = z.discriminatedUnion("type", [
