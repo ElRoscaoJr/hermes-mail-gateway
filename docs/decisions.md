@@ -98,3 +98,10 @@
 - Why: SMTP acknowledgment alone does not establish a provider-visible Sent copy on every generic server. The explicit policy preserves provider-managed no-duplicate behavior and the outbox's non-retry guarantee.
 - Security: `imap://` requires STARTTLS before authentication; `smtp://` also requires STARTTLS. A failed/undefined SEARCH or a candidate set beyond the configured bound fails closed instead of authorizing APPEND on incomplete evidence.
 - Supersedes: D-011's restriction to only `provider_managed`, but not its bounded health and query rules.
+
+## D-015 — Normalize incoming attachment metadata
+- Date / phase: 2026-10-14 / Phase 5
+- Decision: Explicitly selected inline/Content-ID attachments are downloadable. Provider filenames and media types are normalized at the gateway boundary rather than used as a reason to reject otherwise verifiable attachment bytes.
+- Why: Disposition and filename conventions vary across providers; rejecting them produced false negatives for legitimate attachments.
+- Security boundary: Keep exact UID/UIDVALIDITY binding, raw-octet verification, strict base64 padding and quoted-printable syntax checks, exact decoded-length verification, size bounds, and SHA-256. The gateway does not execute attachments or write them to arbitrary filesystem paths.
+- Supersedes: none

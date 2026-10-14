@@ -19,7 +19,7 @@ class FakeMailboxAdapter implements ImapAdapter {
   async listFolders(): Promise<readonly MailFolder[]> { this.calls.push("folders"); return [{ path: "Inbox", name: "Inbox", delimiter: "/" }, { path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All" }]; }
   async listAttachments(reference: string) { this.calls.push(`attachments:${reference}`); return (this.source?.attachments ?? []).map(({ content: _content, ...metadata }) => metadata); }
   async read(reference: string): Promise<MailMessage> { this.calls.push(`read:${reference}`); return { ...message("Inbox", reference, this.label), text: `safe body ${this.label}`, attachments: [], ...this.source }; }
-  async downloadAttachment(reference: string, attachmentIndex: number) { this.calls.push(`download:${reference}:${attachmentIndex}`); return { filename: "safe.txt", contentType: "text/plain", size: 4, sha256: "a".repeat(64), content: Buffer.from("safe") }; }
+  async downloadAttachment(reference: string, attachmentIndex: number) { this.calls.push(`download:${reference}:${attachmentIndex}`); return { filename: "folder\\safe?.txt", contentType: "invalid/type\\r\\nX-Evil: value", size: 4, sha256: "a".repeat(64), content: Buffer.from("safe") }; }
   async thread(folder: string, reference: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`thread:${folder}:${reference}:${limit}`); return [message(folder, reference, "thread subject")]; }
   async mutate(action: { type: "move" | "copy" | "markRead" | "markUnread" | "addFlag" | "removeFlag" | "trash" | "restore"; messageReference: string; destinationFolder?: string; flag?: "\\Flagged" | "\\Answered" }): Promise<{ action: typeof action.type; reference: string; folder: string; uid: number; flags: readonly string[] }> { this.calls.push(`mutate:${action.type}`); return { action: action.type, reference: action.messageReference, folder: action.destinationFolder ?? "Inbox", uid: 7, flags: [] }; }
   async verifySent(messageIdHeader: string): Promise<boolean> { this.calls.push(`verify:${messageIdHeader}`); return this.verified; }
@@ -211,21 +211,21 @@ test("mailQuery dispatches supported operations to the account-scoped mailbox ad
 test("mailQuery read exposes only message bodies and attachment metadata", async () => {
   const base = fixture();
   const bytes = Buffer.from("synthetic attachment bytes");
-  const readMessage: MailMessage = { ...message("Inbox", "read-ref", "Read me"), uidValidity: 41, text: "safe message body", attachments: [{ filename: "private.txt", contentType: "text/plain", size: bytes.length, content: bytes }] };
+  const readMessage: MailMessage = { ...message("Inbox", "read-ref", "Read me"), uidValidity: 41, text: "safe message body", attachments: [{ filename: "folder\\private?.txt", contentType: "invalid/type\\r\\nX-Evil: value", size: bytes.length, content: bytes }] };
   const imap: ImapAdapter = { verifySent: async () => false, read: async () => readMessage };
   const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
   const result = await service.mailQuery({ accountId: "acct", operation: "read", messageReference: readMessage.reference }, context) as { message: Record<string, unknown> };
   assert.equal(result.message.uidValidity, undefined);
-  assert.deepEqual(result.message.attachments, [{ filename: "private.txt", contentType: "text/plain", size: bytes.length }]);
+  assert.deepEqual(result.message.attachments, [{ filename: "private_.txt", contentType: "application/octet-stream", size: bytes.length }]);
   base.db.close();
 });
 
 test("mailQuery returns bounded attachment metadata and thread summaries", async () => {
   const base = fixture();
-  const first = new FakeMailboxAdapter("first", true, { attachments: [{ filename: "invoice.pdf", contentType: "application/pdf", size: 12, content: Buffer.from("secret bytes") }] });
+  const first = new FakeMailboxAdapter("first", true, { attachments: [{ filename: "folder\\invoice?.pdf", contentType: "invalid/type\\r\\nX-Evil: value", size: 12, content: Buffer.from("secret bytes") }] });
   const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: first, smtp: new FakeSmtpAdapter() }]]));
   const attachments = await service.mailQuery({ accountId: "acct", operation: "attachments", messageReference: "ref-1", limit: 1 }, context);
-  assert.deepEqual(attachments, { attachments: [{ filename: "invoice.pdf", contentType: "application/pdf", size: 12 }] });
+  assert.deepEqual(attachments, { attachments: [{ filename: "invoice_.pdf", contentType: "application/octet-stream", size: 12 }] });
   assert.deepEqual(first.calls, ["attachments:ref-1"]);
   assert.doesNotMatch(JSON.stringify(attachments), /secret bytes|"content"/i);
   const thread = await service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "ref-1", limit: 1 }, context);
@@ -298,7 +298,7 @@ test("mailQuery structured search and attachment download stay account-bound and
   const filtered = await service.mailQuery({ accountId: "acct", operation: "search", search: { from: "from@example.test", isRead: true }, limit: 1 }, context) as { messages: MailSummary[] };
   assert.equal(filtered.messages[0]?.subject, "filtered");
   const downloaded = await service.mailQuery({ accountId: "acct", operation: "attachments", messageReference: "ref-1", attachmentIndex: 0, limit: 1 }, context) as { attachment: Record<string, unknown> };
-  assert.deepEqual(downloaded.attachment, { filename: "safe.txt", contentType: "text/plain", size: 4, sha256: "a".repeat(64), contentBase64: "c2FmZQ==" });
+  assert.deepEqual(downloaded.attachment, { filename: "safe_.txt", contentType: "application/octet-stream", size: 4, sha256: "a".repeat(64), contentBase64: "c2FmZQ==" });
   assert.deepEqual(first.calls.slice(-2), ["filtered:Inbox::from,isRead:2", "download:ref-1:0"]);
 });
 
@@ -348,14 +348,18 @@ test("forwarding persists a deterministic body and real source attachment bytes"
   assert.equal(source.calls.filter((call) => call === "read:source-ref").length, 1);
 });
 
-test("forwarding rejects source attachments without safe content and unsafe source metadata", async () => {
+test("forwarding rejects missing source bytes but sanitizes attachment metadata", async () => {
   const base = fixture();
   const noBytes = new FakeMailboxAdapter("source", true, { attachments: [{ filename: "x.txt", contentType: "text/plain", size: 1 }] });
   const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: noBytes, smtp: new FakeSmtpAdapter() }]]));
   await assert.rejects(service.mailPrepare({ accountId: "acct", idempotencyKey: "forward-no-bytes", recipients: ["recipient@example.test"], subject: "Fwd", forwarding: { originalMessageReference: "ref" }, attachments: [] }, context), (error: unknown) => error instanceof SafeError && error.code === "UNSUPPORTED_OPERATION");
-  const unsafe = new FakeMailboxAdapter("source", true, { subject: "bad\nsubject" });
-  const unsafeService = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: unsafe, smtp: new FakeSmtpAdapter() }]]));
-  await assert.rejects(unsafeService.mailPrepare({ accountId: "acct", idempotencyKey: "forward-unsafe", recipients: ["recipient@example.test"], subject: "Fwd", forwarding: { originalMessageReference: "ref" }, attachments: [] }, context), (error: unknown) => error instanceof SafeError && error.code === "INVALID_INPUT");
+  const bytes = Buffer.from("valid source bytes");
+  const metadataSource = new FakeMailboxAdapter("source", true, { attachments: [{ filename: "folder\\invoice?.pdf", contentType: "invalid/type\\r\\nX-Evil: value", size: bytes.length, content: bytes }] });
+  const sanitizedService = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: metadataSource, smtp: new FakeSmtpAdapter() }]]));
+  const prepared = await sanitizedService.mailPrepare({ accountId: "acct", idempotencyKey: "forward-sanitized", recipients: ["recipient@example.test"], subject: "Fwd", forwarding: { originalMessageReference: "ref" }, attachments: [] }, context) as { messageId: string };
+  const raw = base.repo.getRawMime(prepared.messageId).toString("utf8");
+  assert.ok(raw.includes("invoice_.pdf"));
+  assert.ok(raw.includes("application/octet-stream"));
 });
 
 test("mailPrepare and mailExecute use durable MIME, enforce ownership, and verifyOnly confirms without SMTP", async () => {

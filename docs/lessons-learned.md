@@ -76,3 +76,11 @@
 - What failed: Relying on one IMAP `TEXT` criterion despite provider-specific search behavior.
 - Working solution: Use ImapFlow's bounded server-side `or` SearchObject with `text`, `subject`, and `header.Subject` criteria, then slice returned UIDs before fetching summaries.
 - Rule for next time: Keep mailbox search provider-tolerant at the SearchObject layer while preserving UID-only fetches and server-side result bounds.
+
+## L-012 — Normalize attachment metadata instead of rejecting valid bytes
+- Problem: Blanket rejection of inline/Content-ID parts and unusual provider filenames/types caused false negatives for explicitly selected attachments.
+- Where: Bounded IMAP attachment listing/download and forwarded-message preparation.
+- What failed: Treating untrusted display metadata as a reason to reject otherwise verifiable bytes, even though the gateway does not write downloads to arbitrary paths.
+- Working solution: Permit explicitly selected inline/Content-ID parts, reduce filenames to a sanitized basename with a deterministic fallback, and map invalid media types to `application/octet-stream`.
+- Rule for next time: Keep UID, raw-octet, canonical transfer-syntax, decoded-length, hash, and size checks strict; sanitize metadata instead of rejecting content solely because a provider supplied an unusual name or disposition. Unknown transfer encodings remain unsupported until a verified decoder exists.
+- Regression coverage: `test/unit/attachment-hardening.test.ts` and `test/integration/application-service.test.ts`.

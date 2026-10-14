@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import { SafeError, type SafeResult } from "../errors.js";
 import type { AccountProjection, ForwardedAttachment } from "../domain/types.js";
-import type { ImapAdapter, SmtpAdapter, MailFolder, MailMessage, MailSummary, MailboxMutation } from "../mail/adapters.js";
+import { safeAttachmentContentType, safeAttachmentFilename, type ImapAdapter, type SmtpAdapter, type MailFolder, type MailMessage, type MailSummary, type MailboxMutation } from "../mail/adapters.js";
 import { executeOnce } from "../mail/execute.js";
 import { prepareMessage } from "../mail/prepare.js";
 import { AccountRepository } from "../outbox/accounts.js";
@@ -96,11 +96,10 @@ function forwardedBlock(source: MailMessage): string {
 }
 function sourceAttachments(source: MailMessage, maxBytes: number): ForwardedAttachment[] {
   let total = 0;
-  return source.attachments.map((item) => {
+  return source.attachments.map((item, index) => {
     if (item.content === undefined) throw new SafeError("UNSUPPORTED_OPERATION", "Forwarding source attachments is unavailable safely.");
-    const filename = item.filename;
-    const contentType = item.contentType;
-    if (!filename || filename.length > 255 || /[\r\n\\/]/.test(filename) || !contentType || contentType.length > 128 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(contentType)) throw new SafeError("INVALID_INPUT", "The source attachment metadata is invalid.");
+    const filename = safeAttachmentFilename(item.filename, index);
+    const contentType = safeAttachmentContentType(item.contentType);
     if (item.size !== undefined && item.size !== item.content.length) throw new SafeError("ATTACHMENT_CHANGED", "The source attachment changed while it was being read.");
     total += item.content.length;
     if (item.content.length > maxBytes || total > maxBytes) throw new SafeError("INVALID_INPUT", "Forwarded attachments exceed the configured message size policy.");
@@ -126,7 +125,7 @@ function publicMailMessage(message: MailMessage): unknown {
     ...publicSummary(message),
     ...(message.text === undefined ? {} : { text: message.text }),
     ...(message.html === undefined ? {} : { html: message.html }),
-    attachments: message.attachments.map(({ filename, contentType, size, disposition, contentId }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }), ...(disposition === undefined ? {} : { disposition }), ...(contentId === undefined ? {} : { contentId }) })),
+    attachments: message.attachments.map(({ filename, contentType, size, disposition, contentId }, index) => ({ filename: safeAttachmentFilename(filename, index), contentType: safeAttachmentContentType(contentType), ...(size === undefined ? {} : { size }), ...(disposition === undefined ? {} : { disposition }), ...(contentId === undefined ? {} : { contentId }) })),
   };
 }
 function publicThreadMessage(message: MailMessage): unknown { return publicMailMessage(message); }
@@ -201,15 +200,15 @@ export class MailGatewayService implements MailApplicationService {
       if (input.attachmentIndex !== undefined) {
         if (!imap.downloadAttachment) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support bounded attachment downloads.");
         const attachment = await safeProviderCall(() => imap.downloadAttachment!(input.messageReference!, input.attachmentIndex!));
-        value = { attachment: { filename: attachment.filename, contentType: attachment.contentType, size: attachment.size, sha256: attachment.sha256, contentBase64: attachment.content.toString("base64") } };
+        value = { attachment: { filename: safeAttachmentFilename(attachment.filename, input.attachmentIndex), contentType: safeAttachmentContentType(attachment.contentType), size: attachment.size, sha256: attachment.sha256, contentBase64: attachment.content.toString("base64") } };
       } else {
         if (imap.listAttachments) {
           const attachments = await safeProviderCall(() => imap.listAttachments!(input.messageReference!));
-          value = { attachments: attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
+          value = { attachments: attachments.slice(0, 32).map(({ filename, contentType, size }, index) => ({ filename: safeAttachmentFilename(filename, index), contentType: safeAttachmentContentType(contentType), ...(size === undefined ? {} : { size }) })) };
         } else {
           if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support attachment metadata.");
           const message = await safeProviderCall(() => imap.read!(input.messageReference!));
-          value = { attachments: message.attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
+          value = { attachments: message.attachments.slice(0, 32).map(({ filename, contentType, size }, index) => ({ filename: safeAttachmentFilename(filename, index), contentType: safeAttachmentContentType(contentType), ...(size === undefined ? {} : { size }) })) };
         }
       }
     } else if (input.operation === "thread") {

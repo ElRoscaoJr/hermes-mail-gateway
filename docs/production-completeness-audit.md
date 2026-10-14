@@ -78,8 +78,8 @@ The four-tool MCP boundary is still sufficient. Missing capabilities should be a
 7. **Search is intentionally provider-neutral and bounded.**
    - Structured from/to/cc/subject/date/read/flagged/Message-ID filters now compile to server-side criteria. `hasAttachment` remains an explicit unsupported result where IMAP cannot represent it safely; provider capability reporting and native provider syntax remain out of scope.
 
-8. **Attachment retrieval remains intentionally conservative.**
-   - Bounded selected-attachment download is implemented through `mail_query`; it returns base64 bytes plus safe metadata and rejects inline/content-ID or unsafe metadata. It does not expose raw MIME, arbitrary headers, or a filesystem artifact handle. Inline image rendering remains out of scope.
+8. **Attachment retrieval is bounded and normalizes provider metadata.**
+   - Selected attachment download is implemented through `mail_query`; it returns base64 bytes plus sanitized metadata and permits explicitly selected inline/Content-ID parts. It does not expose raw MIME, arbitrary headers, or a filesystem artifact handle. Automatic inline-image rendering remains out of scope.
 
 9. **Authentication is password/App-Password only.**
    - Gmail currently prefers OAuth2; App Passwords require 2-Step Verification and may be unavailable under organization policy. Zoho supports application-specific passwords for IMAP/SMTP and OAuth2 for its REST API; REST OAuth must not be assumed to be IMAP XOAUTH2.
@@ -103,7 +103,7 @@ The four-tool MCP boundary is still sufficient. Missing capabilities should be a
 
 14. Native Gmail labels, thread IDs, history sync, push watch, and API attachment resources.
 15. Native Zoho tags, message IDs, REST draft/send operations, and OAuth scopes.
-16. Inline images and Content-ID-aware HTML rendering.
+16. Automatic inline-image rendering and Content-ID-aware HTML rewriting.
 17. Server-side sort/thread extensions where supported, with a safe fallback to current bounded queries.
 
 ## Recommended implementation order

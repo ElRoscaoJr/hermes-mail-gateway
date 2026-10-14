@@ -17,7 +17,8 @@
 | Redaction | `src/observability/redaction.ts` | Recursive secret and bearer-token redaction. |
 | Provider-free adapters | `src/mail/adapters.ts` | IMAP/SMTP contracts, typed SMTP envelope, and deterministic test fakes. |
 | Safe mailbox projection | `src/mail/adapters.ts` | Account-bound opaque references, visible CC, bounded reply metadata, and selected Hermes forwarding headers; no Bcc, arbitrary headers, raw MIME, or attachment bytes outside explicit bounded download mode. |
-| `ImapFlowMailAdapter` | `src/mail/adapters.ts` | Provider-independent, per-operation ImapFlow 2.0.0 client lifecycle for no-send connectivity checks, explicit-folder listing/search with server-side UID cursors and strict filters, UIDVALIDITY-bound reads/downloads, and exact configured-Sent Message-ID verification. |
+| `ImapFlowMailAdapter` | `src/mail/adapters.ts` | Provider-independent, per-operation ImapFlow 2.0.0 client lifecycle for no-send connectivity checks, explicit-folder listing/search with server-side UID cursors and strict filters, UIDVALIDITY-bound reads/downloads, sanitized attachment metadata with explicit inline/Content-ID support, and exact configured-Sent Message-ID verification. |
+| Attachment metadata normalization (`safeAttachmentFilename`, `safeAttachmentContentType`) | `src/mail/adapters.ts` | Shared normalizers for provider-controlled filenames and media types; see [attachment-metadata.md](attachment-metadata.md). |
 | Preparation/execution | `src/mail/prepare.ts`, `src/mail/execute.ts` | MIME is built before persistence; execution submits stored bytes once with stable Message-ID and no-retry unknown outcomes. |
 | Credential reference parser/store | `src/mail/credentials.ts` | Validates explicit `keychain:<service>/<account>` references and resolves credentials without MCP exposure. |
 | MIME builder | `src/mail/mime.ts` | Nodemailer 10.0.1 stream MIME generation for text, optional HTML, and hash/size-validated attachments. |

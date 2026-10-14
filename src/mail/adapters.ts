@@ -149,6 +149,56 @@ function decodeReference(reference: string, accountId: string): { folder: string
 function address(value: { name?: string | undefined; address?: string | undefined } | undefined): MailAddress | undefined { if (!value) return undefined; return { ...(value.name === undefined ? {} : { name: value.name }), ...(value.address === undefined ? {} : { address: value.address }) }; }
 function addresses(values: readonly { name?: string | undefined; address?: string | undefined }[] | undefined): MailAddress[] { return (values ?? []).map(address).filter((item): item is MailAddress => item !== undefined); }
 function safeHeader(value: unknown, max = 998): string | undefined { return typeof value === "string" && value.length <= max && !/[\r\n]/.test(value) ? value : undefined; }
+export function safeAttachmentFilename(value: unknown, index: number): string {
+  const fallback = `attachment-${Number.isSafeInteger(index) && index >= 0 ? index + 1 : 1}.bin`;
+  if (typeof value !== "string") return fallback;
+  const basename = value.normalize("NFC").replace(/\\/g, "/").split("/").filter(Boolean).at(-1) ?? "";
+  let safe = basename.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u206f]/g, "").replace(/[<>:"|?*]/g, "_").trim().replace(/[. ]+$/g, "");
+  if (!safe || safe === "." || safe === "..") return fallback;
+  if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(safe)) safe = `_${safe}`;
+  let bounded = "";
+  for (const character of Array.from(safe)) {
+    if (Buffer.byteLength(bounded + character, "utf8") > 255) break;
+    bounded += character;
+  }
+  safe = bounded.replace(/[. ]+$/g, "");
+  return safe && safe !== "." && safe !== ".." ? safe : fallback;
+}
+export function safeAttachmentContentType(value: unknown): string {
+  if (typeof value !== "string" || value.length > 128 || /[\r\n]/.test(value)) return "application/octet-stream";
+  const mediaType = value.split(";", 1)[0]?.trim();
+  return mediaType && /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(mediaType)
+    ? mediaType.toLowerCase()
+    : "application/octet-stream";
+}
+function expectedDecodedAttachmentSize(raw: Buffer, encoding: string): number {
+  if (encoding === "base64") {
+    const encoded = raw.toString("latin1").replace(/[\r\n\t ]/g, "");
+    if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new SafeError("ATTACHMENT_CHANGED", "The attachment has malformed base64 transfer data.");
+    const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+    if (padding > 0) {
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      const finalDataCharacter = encoded[encoded.length - padding - 1]!;
+      const value = alphabet.indexOf(finalDataCharacter);
+      const unusedBitsMask = padding === 2 ? 0x0f : 0x03;
+      if (value < 0 || (value & unusedBitsMask) !== 0) throw new SafeError("ATTACHMENT_CHANGED", "The attachment has noncanonical base64 padding bits.");
+    }
+    return encoded.length / 4 * 3 - padding;
+  }
+  if (encoding === "quoted-printable") {
+    let decodedSize = 0;
+    const isHex = (byte: number | undefined): boolean => byte !== undefined && ((byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x46) || (byte >= 0x61 && byte <= 0x66));
+    for (let index = 0; index < raw.length; index++) {
+      if (raw[index] !== 0x3d) { decodedSize++; continue; }
+      if (raw[index + 1] === 0x0d && raw[index + 2] === 0x0a) { index += 2; continue; }
+      if (!isHex(raw[index + 1]) || !isHex(raw[index + 2])) throw new SafeError("ATTACHMENT_CHANGED", "The attachment has malformed quoted-printable transfer data.");
+      decodedSize++;
+      index += 2;
+    }
+    return decodedSize;
+  }
+  return raw.length;
+}
 function messageIdHeaders(value: unknown): string[] {
   const values = Array.isArray(value) ? value : [value];
   return values.flatMap((item) => typeof item === "string" ? item.match(/<[^<>\r\n]+>/g) ?? [] : []).filter((item) => item.length <= 998).slice(0, 100);
@@ -198,7 +248,7 @@ function attachmentParts(structure: MessageStructureObject): AttachmentPart[] {
   const visit = (node: MessageStructureObject): void => {
     if (node.childNodes?.length) { for (const child of node.childNodes) visit(child); return; }
     const filename = node.dispositionParameters?.filename ?? node.parameters?.name;
-    if (!node.part || (node.disposition?.toLowerCase() !== "attachment" && !filename)) return;
+    if (!node.part || (node.disposition?.toLowerCase() !== "attachment" && !filename && !node.id)) return;
     result.push({ part: node.part, ...(filename === undefined ? {} : { filename }), contentType: node.type, ...(node.encoding === undefined ? {} : { encoding: node.encoding }), ...(node.size === undefined ? {} : { size: node.size }), ...(node.disposition === undefined ? {} : { disposition: node.disposition }), ...(node.id === undefined ? {} : { contentId: node.id }) });
   };
   visit(structure);
@@ -439,7 +489,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
     return criteria;
   }
 
-  async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const uidValidity = this.validateUidValidity(client, target.uidValidity); const { message, source } = await this.verifiedMessageSource(client, target.uid, uidValidity); const parsed = await simpleParser(source); const summary = this.summary(target.folder, { ...message, size: source.length }, uidValidity); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item) => ({ ...(item.filename === undefined ? {} : { filename: item.filename }), ...(item.contentType === undefined ? {} : { contentType: item.contentType }), ...(item.size === undefined ? {} : { size: item.size }), ...(item.contentDisposition === undefined ? {} : { disposition: item.contentDisposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
+  async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const uidValidity = this.validateUidValidity(client, target.uidValidity); const { message, source } = await this.verifiedMessageSource(client, target.uid, uidValidity); const parsed = await simpleParser(source); const summary = this.summary(target.folder, { ...message, size: source.length }, uidValidity); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item, index) => ({ filename: safeAttachmentFilename(item.filename, index), contentType: safeAttachmentContentType(item.contentType), ...(item.size === undefined ? {} : { size: item.size }), ...(item.contentDisposition === undefined ? {} : { disposition: item.contentDisposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
 
   private async verifiedMessageSource(client: ImapFlowClient, uid: number, uidValidity: number): Promise<{ message: FetchMessageObject; source: Buffer }> {
     const message = await client.fetchOne(uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { start: 0, maxLength: Math.min(65_536, this.maxReadBytes) } }, { uid: true });
@@ -500,7 +550,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
       const message = await client.fetchOne(target.uid, { uid: true, size: true, bodyStructure: true }, { uid: true });
       if (!message) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found.");
       if (!message.bodyStructure) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return message attachment metadata.");
-      return attachmentParts(message.bodyStructure).map((item) => ({ ...(safeHeader(item.filename, 255) === undefined ? {} : { filename: item.filename }), ...(safeHeader(item.contentType, 128) === undefined ? {} : { contentType: item.contentType }), ...(Number.isSafeInteger(item.size) && item.size! >= 0 ? { size: item.size } : {}), ...(item.disposition === undefined ? {} : { disposition: item.disposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }) }));
+      return attachmentParts(message.bodyStructure).map((item, index) => ({ filename: safeAttachmentFilename(item.filename, index), contentType: safeAttachmentContentType(item.contentType), ...(Number.isSafeInteger(item.size) && item.size! >= 0 ? { size: item.size } : {}), ...(item.disposition === undefined ? {} : { disposition: item.disposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }) }));
     } finally { lock.release(); } });
   }
 
@@ -516,21 +566,18 @@ export class ImapFlowMailAdapter implements ImapAdapter {
       if (!message.bodyStructure) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return message attachment metadata.");
       const item = attachmentParts(message.bodyStructure)[attachmentIndex];
       if (!item) throw new SafeError("INVALID_INPUT", "Attachment index is out of range.");
-      const filename = item.filename; const contentType = item.contentType;
-      if (!filename || filename === "." || filename === ".." || filename.length > 255 || /[\u0000-\u001f\u007f\\/]/.test(filename) || !contentType || contentType.length > 128 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(contentType) || item.disposition?.toLowerCase() === "inline" || item.contentId) throw new SafeError("UNSUPPORTED_OPERATION", "This attachment is inline or has unsafe metadata.");
+      const filename = safeAttachmentFilename(item.filename, attachmentIndex); const contentType = safeAttachmentContentType(item.contentType);
       const encoding = (item.encoding ?? "binary").toLowerCase();
       if (!["base64", "quoted-printable", "7bit", "8bit", "binary"].includes(encoding)) throw new SafeError("UNSUPPORTED_OPERATION", "The attachment transfer encoding is unsupported.");
       const raw = await this.verifyRawAttachmentPart(client, target.uid, item.part, item.size ?? Number.NaN);
-      // MIME decoders are deliberately forgiving; reject malformed transfer syntax before decoding.
-      if (encoding === "base64") {
-        const encoded = raw.toString("latin1").replace(/[\r\n\t ]/g, "");
-        if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new SafeError("ATTACHMENT_CHANGED", "The attachment has malformed base64 transfer data.");
-      }
+      const expectedDecodedSize = expectedDecodedAttachmentSize(raw, encoding);
+      if (expectedDecodedSize > this.maxAttachmentDownloadBytes) throw new SafeError("ATTACHMENT_TOO_LARGE", "The attachment exceeds the configured download bound.");
       // Force a single opaque attachment so mailparser does not transform text or interpret nested MIME.
       const headers = Buffer.from(`Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="part.bin"\r\nContent-Transfer-Encoding: ${encoding}\r\n\r\n`, "ascii");
       const parsed = await simpleParser(Buffer.concat([headers, raw]));
       if (parsed.attachments.length !== 1) throw new SafeError("ATTACHMENT_CHANGED", "The verified attachment could not be decoded unambiguously.");
       const content = Buffer.from(parsed.attachments[0]!.content);
+      if (content.length !== expectedDecodedSize) throw new SafeError("ATTACHMENT_CHANGED", "The decoded attachment length did not match its verified transfer encoding.");
       if (content.length > this.maxAttachmentDownloadBytes) throw new SafeError("ATTACHMENT_TOO_LARGE", "The attachment exceeds the configured download bound.");
       return { filename, contentType, size: content.length, sha256: createHash("sha256").update(content).digest("hex"), content };
     } finally { lock.release(); } });

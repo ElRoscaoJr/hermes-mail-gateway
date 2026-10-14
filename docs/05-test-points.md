@@ -107,7 +107,9 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 
 - [x] Strict search filters reject unknown fields, invalid date ranges, misplaced filters, and unsafe bounds.
 - [x] IMAP fake-adapter tests verify server-side from/to/cc/subject/date/read/flagged/Message-ID criteria, UID cursor composition, and explicit no-scan rejection for `hasAttachment`.
-- [x] Attachment download is an explicit `mail_query` mode, account/reference/UIDVALIDITY bound, limited to index 0–31, configured `maxReadBytes`, and a 5,000,000-byte public maximum.
+- [x] Attachment download is an explicit `mail_query` mode, account/reference/UIDVALIDITY bound, limited to index 0–31, configured `maxAttachmentDownloadBytes`, and a 5,000,000-byte public maximum.
+- [x] Selected inline/Content-ID parts remain downloadable; path/control/bidirectional/reserved/device filenames are normalized, invalid content types fall back to `application/octet-stream`, valid media types with parameters are normalized to their base type, and unknown transfer encodings remain rejected.
+- [x] Base64 alphabet, padding, and unused padding bits are validated; quoted-printable escapes are validated; computed decoded size must match the parser output and remain within the configured limit before the payload is returned.
 - [x] Fake-adapter tests verify selected bytes, size, SHA-256, base64 public output, out-of-range/cross-account/stale behavior, and MCP redaction excludes raw MIME and raw content fields.
 - [x] Exactly four MCP tools remain; delete semantics remain trash-only with no EXPUNGE or permanent deletion.
 - [x] Typecheck, full tests, build, audit, and diff check pass; no provider was contacted and no mail was sent.

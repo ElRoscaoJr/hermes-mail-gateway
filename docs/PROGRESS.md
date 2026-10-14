@@ -32,7 +32,7 @@
 
 ## Current position
 - Phase: 5 — Development and controlled-provider validation complete; production rollout remains intentionally disabled.
-- Current position: UIDVALIDITY-aware, audited single-message mailbox mutations and durable provider-visible draft preparation/save/cancellation are implemented; structured provider-neutral search filters and bounded selected-attachment downloads remain under the existing four-tool boundary. Draft APPEND is exact-Message-ID/`\\Draft` verified, UID/UIDVALIDITY-bound, idempotent, and permanently verification-required after ambiguous outcomes. The next P0 slice is connection/command timeout, concurrency, rate policy, and provider backoff enforcement. Never retry an ambiguous send or draft append automatically.
+- Current position: UIDVALIDITY-aware, audited single-message mailbox mutations and durable provider-visible draft preparation/save/cancellation are implemented; structured provider-neutral search filters and bounded selected-attachment downloads remain under the existing four-tool boundary. Selected inline/Content-ID parts are downloadable; filenames and media types are normalized while exact-byte, UID, encoding, and size checks remain enforced. Draft APPEND is exact-Message-ID/`\\Draft` verified, UID/UIDVALIDITY-bound, idempotent, and permanently verification-required after ambiguous outcomes. The next P0 slice is connection/command timeout, concurrency, rate policy, and provider backoff enforcement. Never retry an ambiguous send or draft append automatically.
 
 ## Open items
 - Unresolved user questions: none for the v1 defaults; MIT, English project artifacts, IMAP/SMTP first, OAuth later, and one-profile access are recorded decisions that the project operator can explicitly reverse.
@@ -42,4 +42,4 @@
 - Phase 2 internal budget is recorded in docs/budget.md; this is not a client quote and has no billable rate or tax treatment.
 - Forge issues in progress: none
 
-Last updated: 2026-09-08 — Added durable provider-visible draft APPEND over IMAP with special-use `\\Drafts` discovery/configured fallback, `\\Draft` verification, UID/UIDVALIDITY capture, idempotent save state, ambiguous-append blocking, and redacted safe references. Preserved exactly four MCP tools; no mail was sent.
+Last updated: 2026-10-14 — Explicit selected-attachment downloads now permit inline/Content-ID parts and normalize provider filenames/media types while retaining bounded exact-byte, UIDVALIDITY, strict transfer-syntax, decoded-size, and size checks. No provider was contacted and no mail was sent.
