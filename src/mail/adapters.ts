@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import nodemailer from "nodemailer";
-import { ImapFlow, type FetchMessageObject, type ImapFlowOptions, type ListResponse, type MessageEnvelopeObject, type SearchObject } from "imapflow";
+import { ImapFlow, type DownloadObject, type FetchMessageObject, type ImapFlowOptions, type ListResponse, type MessageEnvelopeObject, type MessageStructureObject, type SearchObject } from "imapflow";
 import { simpleParser } from "mailparser";
 import type { AccountProjection, ForwardedAttachment } from "../domain/types.js";
 import { SafeError } from "../errors.js";
@@ -12,11 +13,13 @@ export interface ImapAdapter {
   listFolders?(): Promise<readonly MailFolder[]>;
   checkConnectivity?(): Promise<void>;
   list?(folder: string, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
+  listAttachments?(reference: string): Promise<readonly MailAttachment[]>;
   search?(folder: string, query: string, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
   searchWithFilters?(folder: string, query: string | undefined, filters: MailSearchFilters, limit?: number, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]>;
+  searchAllFolders?(query: string | undefined, filters: MailSearchFilters | undefined, limit?: number, cursor?: string): Promise<MailSearchPage>;
   read?(reference: string): Promise<MailMessage>;
   downloadAttachment?(reference: string, attachmentIndex: number): Promise<DownloadedAttachment>;
-  thread?(folder: string, anchorReference: string, limit?: number): Promise<readonly MailSummary[]>;
+  thread?(folder: string, anchorReference: string, limit?: number, scope?: "currentFolder" | "allFolders"): Promise<readonly MailSummary[]>;
   mutate?(action: MailboxMutation): Promise<MailboxMutationResult>;
 }
 export interface DraftAppendContext { readonly accountId: string; readonly messageIdHeader: string; }
@@ -117,7 +120,8 @@ export interface MailForwardMetadata { readonly originalMessageReference?: strin
 export interface MailSummary { readonly reference: string; readonly folder: string; readonly uid: number; /** Internal cursor/reference binding; removed at the MCP boundary. */ readonly uidValidity?: number; readonly subject?: string | undefined; readonly messageId?: string | undefined; readonly date?: string | undefined; readonly from: readonly MailAddress[]; readonly to: readonly MailAddress[]; readonly cc: readonly MailAddress[]; readonly replyTo?: readonly MailAddress[] | undefined; readonly inReplyTo?: string | undefined; readonly references?: readonly string[] | undefined; readonly forwarding?: MailForwardMetadata | undefined; readonly size?: number | undefined; readonly flags: readonly string[]; }
 export interface MailAttachment { readonly filename?: string; readonly contentType?: string; readonly size?: number; readonly content?: Buffer; readonly disposition?: string; readonly contentId?: string; }
 export interface MailMessage extends MailSummary { readonly text?: string | undefined; readonly html?: string | undefined; readonly attachments: readonly MailAttachment[]; }
-export interface ImapFlowClient { connect(): Promise<void>; logout(): Promise<void>; close(): void; list(): Promise<ListResponse[]>; getMailboxLock(path: string): Promise<{ release(): void }>; append?(path: string | string[], content: string | Buffer, flags?: string[], idate?: Date | string): Promise<{ destination: string; uidValidity?: bigint | number | undefined; uid?: number | undefined; seq?: number | undefined } | false>; search(query: SearchObject, options?: { uid?: boolean }): Promise<number[] | false | undefined>; fetch(range: string | number[], query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): AsyncGenerator<FetchMessageObject, false | void, undefined>; fetchOne(seq: string | number, query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): Promise<FetchMessageObject | false | undefined>; messageFlagsAdd?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageFlagsRemove?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageMove?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | { uidMap?: Map<number, number> | undefined; uidValidity?: bigint | number | undefined } | false | undefined>; messageCopy?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | { uidMap?: Map<number, number> | undefined; uidValidity?: bigint | number | undefined } | false | undefined>; }
+export interface MailSearchPage { readonly messages: readonly MailSummary[]; readonly truncated: boolean; readonly foldersSearched: number; readonly nextCursor?: string; }
+export interface ImapFlowClient { connect(): Promise<void>; logout(): Promise<void>; close(): void; list(): Promise<ListResponse[]>; getMailboxLock(path: string): Promise<{ release(): void }>; append?(path: string | string[], content: string | Buffer, flags?: string[], idate?: Date | string): Promise<{ destination: string; uidValidity?: bigint | number | undefined; uid?: number | undefined; seq?: number | undefined } | false>; search(query: SearchObject, options?: { uid?: boolean }): Promise<number[] | false | undefined>; download?(range: string | number, part?: string, options?: { uid?: boolean; maxBytes?: number; chunkSize?: number }): Promise<DownloadObject>; fetch(range: string | number[], query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; bodyStructure?: boolean; source?: { maxLength: number } }, options?: { uid?: boolean }): AsyncGenerator<FetchMessageObject, false | void, undefined>; fetchOne(seq: string | number, query: { uid?: boolean; envelope?: boolean; flags?: boolean; internalDate?: boolean; size?: boolean; bodyStructure?: boolean; headers?: boolean | string[]; bodyParts?: Array<string | { key: string; start?: number; maxLength?: number }>; source?: { maxLength: number } }, options?: { uid?: boolean }): Promise<FetchMessageObject | false | undefined>; messageFlagsAdd?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageFlagsRemove?(uid: number, flags: string[], options?: { uid?: boolean }): Promise<unknown>; messageMove?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | { uidMap?: Map<number, number> | undefined; uidValidity?: bigint | number | undefined } | false | undefined>; messageCopy?(uid: number, destination: string, options?: { uid?: boolean }): Promise<number[] | { uidMap?: Map<number, number> | undefined; uidValidity?: bigint | number | undefined } | false | undefined>; }
 export type ImapFlowClientFactory = (options: ImapFlowOptions) => ImapFlowClient;
 
 export interface ImapFlowMailAdapterOptions {
@@ -126,6 +130,7 @@ export interface ImapFlowMailAdapterOptions {
   readonly clientFactory?: ImapFlowClientFactory;
   readonly maxResults?: number;
   readonly maxReadBytes?: number;
+  readonly maxAttachmentDownloadBytes?: number;
 }
 
 function parseEndpoint(endpoint: string): { host: string; port: number; secure: boolean } {
@@ -139,7 +144,7 @@ function parseEndpoint(endpoint: string): { host: string; port: number; secure: 
 
 function encodeReference(accountId: string, folder: string, uid: number, uidValidity: number): string { return Buffer.from(JSON.stringify({ accountId, folder, uid, uidValidity }), "utf8").toString("base64url"); }
 function decodeReference(reference: string, accountId: string): { folder: string; uid: number; uidValidity: number } {
-  try { const value = JSON.parse(Buffer.from(reference, "base64url").toString("utf8")) as { accountId?: unknown; folder?: unknown; uid?: unknown; uidValidity?: unknown }; if (value.accountId !== accountId || typeof value.folder !== "string" || !value.folder || !Number.isSafeInteger(value.uid) || (value.uid as number) < 1 || !Number.isSafeInteger(value.uidValidity) || (value.uidValidity as number) < 1) throw new Error(); return { folder: value.folder, uid: value.uid as number, uidValidity: value.uidValidity as number }; } catch { throw new SafeError("REFERENCE_INVALID", "Message reference is invalid for this account."); }
+  try { const value = JSON.parse(Buffer.from(reference, "base64url").toString("utf8")) as { accountId?: unknown; folder?: unknown; uid?: unknown; uidValidity?: unknown }; if (value.accountId !== accountId || typeof value.folder !== "string" || !value.folder || !Number.isSafeInteger(value.uid) || (value.uid as number) < 1 || (value.uid as number) > IMAP_UID_MAX || !Number.isSafeInteger(value.uidValidity) || (value.uidValidity as number) < 1 || (value.uidValidity as number) > IMAP_UID_MAX) throw new Error(); return { folder: value.folder, uid: value.uid as number, uidValidity: value.uidValidity as number }; } catch { throw new SafeError("REFERENCE_INVALID", "Message reference is invalid for this account."); }
 }
 function address(value: { name?: string | undefined; address?: string | undefined } | undefined): MailAddress | undefined { if (!value) return undefined; return { ...(value.name === undefined ? {} : { name: value.name }), ...(value.address === undefined ? {} : { address: value.address }) }; }
 function addresses(values: readonly { name?: string | undefined; address?: string | undefined }[] | undefined): MailAddress[] { return (values ?? []).map(address).filter((item): item is MailAddress => item !== undefined); }
@@ -149,6 +154,36 @@ function messageIdHeaders(value: unknown): string[] {
   return values.flatMap((item) => typeof item === "string" ? item.match(/<[^<>\r\n]+>/g) ?? [] : []).filter((item) => item.length <= 998).slice(0, 100);
 }
 function headerValue(headers: Map<string, unknown> | undefined, name: string): unknown { return headers?.get(name) ?? headers?.get(name.toLowerCase()); }
+interface AllFolderSearchCursor { readonly accountId: string; readonly queryHash: string; readonly generationHash: string; readonly dateMs: number | null; readonly folder: string; readonly uid: number; }
+function searchHash(query: string | undefined, filters: MailSearchFilters | undefined): string {
+  const canonicalFilters = filters === undefined ? null : Object.fromEntries(Object.entries(filters).sort(([left], [right]) => left.localeCompare(right)));
+  return createHash("sha256").update(JSON.stringify({ query: query ?? null, filters: canonicalFilters })).digest("hex");
+}
+function encodeAllFolderCursor(cursor: AllFolderSearchCursor): string { return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url"); }
+function decodeAllFolderCursor(value: string | undefined, accountId: string, queryHash: string): AllFolderSearchCursor | undefined {
+  if (value === undefined) return undefined;
+  try {
+    if (value.length > 1_024 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Record<string, unknown>;
+    if (parsed.accountId !== accountId || parsed.queryHash !== queryHash || typeof parsed.generationHash !== "string" || !/^[a-f0-9]{64}$/.test(parsed.generationHash) || (parsed.dateMs !== null && (!Number.isSafeInteger(parsed.dateMs))) || typeof parsed.folder !== "string" || parsed.folder.length < 1 || parsed.folder.length > 200 || !Number.isSafeInteger(parsed.uid) || (parsed.uid as number) < 1 || (parsed.uid as number) > IMAP_UID_MAX) throw new Error();
+    return { accountId, queryHash, generationHash: parsed.generationHash, dateMs: parsed.dateMs as number | null, folder: parsed.folder, uid: parsed.uid as number };
+  } catch { throw new SafeError("REFERENCE_INVALID", "The all-folder search cursor is invalid for this query."); }
+}
+function searchDateMs(value: string | undefined): number {
+  if (value === undefined) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+function compareSearchSummary(left: MailSummary, right: MailSummary): number {
+  return searchDateMs(right.date) - searchDateMs(left.date) || left.folder.localeCompare(right.folder) || right.uid - left.uid;
+}
+function comesAfterSearchCursor(item: MailSummary, cursor: AllFolderSearchCursor): boolean {
+  const itemDate = searchDateMs(item.date);
+  const cursorDate = cursor.dateMs ?? Number.NEGATIVE_INFINITY;
+  if (itemDate !== cursorDate) return cursorDate - itemDate > 0;
+  if (item.folder !== cursor.folder) return item.folder.localeCompare(cursor.folder) > 0;
+  return item.uid < cursor.uid;
+}
 function safeForwarding(headers: Map<string, unknown> | undefined): MailForwardMetadata | undefined {
   const originalMessageReference = safeHeader(headerValue(headers, "x-hermes-forwarded-message-reference"), 512);
   const originalMessageId = safeHeader(headerValue(headers, "x-hermes-forwarded-message-id"), 998);
@@ -157,6 +192,23 @@ function safeForwarding(headers: Map<string, unknown> | undefined): MailForwardM
   return { ...(originalMessageReference === undefined ? {} : { originalMessageReference }), ...(originalMessageId === undefined ? {} : { originalMessageId }), ...(originalSubject === undefined ? {} : { originalSubject }) };
 }
 function mapError(error: unknown): never { if (error instanceof SafeError) throw error; throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider is unavailable."); }
+interface AttachmentPart { readonly part: string; readonly filename?: string; readonly contentType: string; readonly encoding?: string; readonly size?: number; readonly disposition?: string; readonly contentId?: string; }
+function attachmentParts(structure: MessageStructureObject): AttachmentPart[] {
+  const result: AttachmentPart[] = [];
+  const visit = (node: MessageStructureObject): void => {
+    if (node.childNodes?.length) { for (const child of node.childNodes) visit(child); return; }
+    const filename = node.dispositionParameters?.filename ?? node.parameters?.name;
+    if (!node.part || (node.disposition?.toLowerCase() !== "attachment" && !filename)) return;
+    result.push({ part: node.part, ...(filename === undefined ? {} : { filename }), contentType: node.type, ...(node.encoding === undefined ? {} : { encoding: node.encoding }), ...(node.size === undefined ? {} : { size: node.size }), ...(node.disposition === undefined ? {} : { disposition: node.disposition }), ...(node.id === undefined ? {} : { contentId: node.id }) });
+  };
+  visit(structure);
+  return result.slice(0, 32);
+}
+
+const IMAP_UID_MAX = 0xffff_ffff;
+const IMAP_UID_WINDOW_SIZE = 1_024;
+const IMAP_UID_SEARCH_WINDOW_BUDGET = 128;
+const IMAP_ALL_FOLDER_SEARCH_WINDOW_BUDGET = 512;
 
 /** Provider-independent, bounded IMAP operations. No reconnect or retry is performed. */
 export class ImapFlowMailAdapter implements ImapAdapter {
@@ -164,12 +216,13 @@ export class ImapFlowMailAdapter implements ImapAdapter {
   private readonly factory: ImapFlowClientFactory;
   private readonly maxResults: number;
   private readonly maxReadBytes: number;
-  constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 101); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 1_000_000, 1), 10_000_000); }
+  private readonly maxAttachmentDownloadBytes: number;
+  constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 101); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 1_000_000, 1), 10_000_000); this.maxAttachmentDownloadBytes = Math.min(Math.max(options.maxAttachmentDownloadBytes ?? 10_000_000, 1), 25_000_000); }
 
   private selectedUidValidity(client: ImapFlowClient): number {
     const raw = (client as ImapFlowClient & { mailbox?: { uidValidity?: bigint | number } }).mailbox?.uidValidity;
     const value = typeof raw === "bigint" ? Number(raw) : raw;
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider returned no valid mailbox generation.");
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > IMAP_UID_MAX) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider returned no valid mailbox generation.");
     return value;
   }
   private validateUidValidity(client: ImapFlowClient, expected: number | undefined): number {
@@ -178,21 +231,58 @@ export class ImapFlowMailAdapter implements ImapAdapter {
     return actual;
   }
 
+  private selectedUidNext(client: ImapFlowClient): number {
+    const raw = (client as ImapFlowClient & { mailbox?: { uidNext?: number } }).mailbox?.uidNext;
+    if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 1 || raw > IMAP_UID_MAX + 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider returned no valid UID range.");
+    return raw;
+  }
+
+  private async searchUidsInWindows(client: ImapFlowClient, criteria: SearchObject, startUid: number, uidNext: number, maxResults: number, budget: { remaining: number }): Promise<number[]> {
+    if (!Number.isSafeInteger(startUid) || startUid < 1 || startUid > IMAP_UID_MAX + 1 || !Number.isSafeInteger(maxResults) || maxResults < 1) throw new SafeError("INVALID_INPUT", "The mailbox search range is invalid.");
+    const lastUid = uidNext - 1;
+    const result: number[] = [];
+    let lower = startUid;
+    while (lower <= lastUid && result.length < maxResults) {
+      if (budget.remaining <= 0) throw new SafeError("QUERY_TOO_LARGE", "The mailbox search exceeded its bounded UID scan; narrow the query.");
+      budget.remaining -= 1;
+      const upper = Math.min(lastUid, lower + IMAP_UID_WINDOW_SIZE - 1);
+      const found = await client.search({ ...criteria, uid: `${lower}:${upper}` }, { uid: true });
+      if (!Array.isArray(found)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an incomplete mailbox search result.");
+      if (found.length > upper - lower + 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned too many mailbox UIDs for a bounded range.");
+      const windowUids = new Set<number>();
+      for (const uid of found) {
+        if (!Number.isSafeInteger(uid) || uid < lower || uid > upper || windowUids.has(uid)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an invalid or duplicate mailbox UID.");
+        windowUids.add(uid);
+      }
+      for (const uid of [...windowUids].sort((left, right) => left - right)) {
+        result.push(uid);
+        if (result.length === maxResults) break;
+      }
+      lower = upper + 1;
+    }
+    if (lower <= lastUid && result.length < maxResults) throw new SafeError("QUERY_TOO_LARGE", "The mailbox search exceeded its bounded UID scan; narrow the query.");
+    return result;
+  }
+
   private async withClient<T>(operation: (client: ImapFlowClient) => Promise<T>): Promise<T> {
     let client: ImapFlowClient | undefined;
     try { const credential = await this.options.credentials.get(this.options.account.credentialRef); if (!credential) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider is unavailable."); client = this.factory({ ...this.endpoint, doSTARTTLS: !this.endpoint.secure, auth: { user: credential.username, pass: credential.password }, logger: false }); await client.connect(); return await operation(client); } catch (error) { return mapError(error); } finally { if (client) { try { await client.logout(); } catch { /* close below */ } client.close(); } }
   }
 
   private async exactSentExists(client: ImapFlowClient, messageIdHeader: string): Promise<boolean> {
-    const found = await client.search({ header: { "Message-ID": messageIdHeader } }, { uid: true });
-    if (!Array.isArray(found)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not complete the Sent lookup.");
-    for (const uid of found.slice(0, this.maxResults)) {
-      if (!Number.isSafeInteger(uid) || uid < 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an invalid Sent UID.");
+    let found: number[];
+    try {
+      found = await this.searchUidsInWindows(client, { header: { "Message-ID": messageIdHeader } }, 1, this.selectedUidNext(client), this.maxResults + 1, { remaining: IMAP_UID_SEARCH_WINDOW_BUDGET });
+    } catch (error) {
+      if (error instanceof SafeError && error.code === "QUERY_TOO_LARGE") throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not complete the bounded Sent lookup.");
+      throw error;
+    }
+    if (found.length > this.maxResults) throw new SafeError("PROVIDER_UNAVAILABLE", "The Sent lookup exceeded the safe verification bound.");
+    for (const uid of found) {
       const message = await client.fetchOne(uid, { uid: true, envelope: true }, { uid: true });
       if (!message || message.uid !== uid || !message.envelope) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the Sent candidate.");
       if (message.envelope.messageId === messageIdHeader) return true;
     }
-    if (found.length > this.maxResults) throw new SafeError("PROVIDER_UNAVAILABLE", "The Sent lookup exceeded the safe verification bound.");
     return false;
   }
 
@@ -210,11 +300,9 @@ export class ImapFlowMailAdapter implements ImapAdapter {
         if (!appended) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the Sent append.");
         let uid = typeof appended.uid === "number" && Number.isSafeInteger(appended.uid) && appended.uid > 0 ? appended.uid : undefined;
         if (uid === undefined) {
-          const found = await client.search({ header: { "Message-ID": context.messageIdHeader } }, { uid: true });
-          if (!Array.isArray(found) || found.length > this.maxResults || found.some((value) => !Number.isSafeInteger(value) || value < 1)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not complete the Sent UID lookup.");
-          const candidates = found.slice(0, 2);
-          if (candidates.length !== 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return an unambiguous Sent UID.");
-          uid = candidates[0]!;
+          const found = await this.searchUidsInWindows(client, { header: { "Message-ID": context.messageIdHeader } }, 1, this.selectedUidNext(client), 2, { remaining: IMAP_UID_SEARCH_WINDOW_BUDGET });
+          if (found.length !== 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return an unambiguous Sent UID.");
+          uid = found[0]!;
         }
         const confirmed = await client.fetchOne(uid, { uid: true, envelope: true, flags: true }, { uid: true });
         if (!confirmed || confirmed.uid !== uid || confirmed.envelope?.messageId !== context.messageIdHeader || ![...(confirmed.flags ?? [])].some((flag) => flag.toLowerCase() === "\\seen")) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the exact Sent Message-ID and flag.");
@@ -233,10 +321,9 @@ export class ImapFlowMailAdapter implements ImapAdapter {
         const returnedUid = typeof appended.uid === "number" && Number.isSafeInteger(appended.uid) && appended.uid > 0 ? appended.uid : undefined;
         let uid: number;
         if (returnedUid === undefined) {
-          const found = await client.search({ header: { "Message-ID": context.messageIdHeader } }, { uid: true });
-          const candidates = (Array.isArray(found) ? found : []).filter((value) => Number.isSafeInteger(value) && value > 0).slice(0, 2);
-          if (candidates.length !== 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return an unambiguous draft UID.");
-          uid = candidates[0]!;
+          const found = await this.searchUidsInWindows(client, { header: { "Message-ID": context.messageIdHeader } }, 1, this.selectedUidNext(client), 2, { remaining: IMAP_UID_SEARCH_WINDOW_BUDGET });
+          if (found.length !== 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return an unambiguous draft UID.");
+          uid = found[0]!;
         } else uid = returnedUid;
         const confirmed = await client.fetchOne(uid, { uid: true, envelope: true, flags: true }, { uid: true });
         if (!confirmed || confirmed.uid !== uid || confirmed.envelope?.messageId !== context.messageIdHeader || ![...(confirmed.flags ?? [])].some((flag) => flag.toLowerCase() === "\\draft")) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the exact draft Message-ID and flag.");
@@ -247,9 +334,90 @@ export class ImapFlowMailAdapter implements ImapAdapter {
 
   async checkConnectivity(): Promise<void> { await this.withClient(async () => undefined); }
 
-  async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number, filters?: MailSearchFilters): Promise<readonly MailSummary[]> {
+  async searchAllFolders(query: string | undefined, filters: MailSearchFilters | undefined, limit = this.maxResults, cursor?: string): Promise<MailSearchPage> {
     const bounded = Math.min(Math.max(limit, 1), this.maxResults);
-    return this.withClient(async (client) => { const lock = await client.getMailboxLock(folder); try { const uidValidity = this.validateUidValidity(client, expectedUidValidity); const criteria: SearchObject[] = []; if (query) criteria.push({ or: [{ text: query }, { subject: query }, { header: { Subject: query } }] }); if (filters) criteria.push(...this.searchCriteria(filters)); const base: SearchObject = criteria.length === 0 ? { all: true } : Object.assign({}, ...criteria) as SearchObject; const search: SearchObject = afterUid === undefined ? base : { ...base, uid: `${afterUid + 1}:*` }; const found = await client.search(search, { uid: true }); const uids = (Array.isArray(found) ? found : []).slice(0, bounded); const result: MailSummary[] = []; for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) result.push(this.summary(folder, message, uidValidity)); return result.slice(0, bounded); } finally { lock.release(); } });
+    const criteria: SearchObject[] = [];
+    if (query) criteria.push({ or: [{ text: query }, { subject: query }, { header: { Subject: query } }] });
+    if (filters) criteria.push(...this.searchCriteria(filters));
+    if (criteria.length === 0) throw new SafeError("INVALID_INPUT", "A search query or structured search filter is required.");
+    const search = Object.assign({}, ...criteria) as SearchObject;
+    const queryHash = searchHash(query, filters);
+    const decodedCursor = decodeAllFolderCursor(cursor, this.options.account.accountId, queryHash);
+    const totalCandidateLimit = Math.min(Math.max(bounded * 20, 100), 2_000);
+
+    return this.withClient(async (client) => {
+      const folders = [...new Set((await client.list()).filter((item) => !item.flags?.has("\\Noselect") && !item.flags?.has("\\NOSELECT")).map((item) => item.path))].sort();
+      if (folders.length > 100) throw new SafeError("QUERY_TOO_LARGE", "The provider has too many selectable folders for a bounded all-folder search.");
+      const candidates: MailSummary[] = [];
+      const generations: Array<[string, number, number]> = [];
+      const searchBudget = { remaining: IMAP_ALL_FOLDER_SEARCH_WINDOW_BUDGET };
+      let totalCandidates = 0;
+
+      for (const folder of folders) {
+        const lock = await client.getMailboxLock(folder);
+        try {
+          const uidValidity = this.selectedUidValidity(client);
+          const uidNext = this.selectedUidNext(client);
+          generations.push([folder, uidValidity, uidNext]);
+          const remainingCandidateCapacity = totalCandidateLimit - totalCandidates;
+          const uids = await this.searchUidsInWindows(client, search, 1, uidNext, remainingCandidateCapacity + 1, searchBudget);
+          if (uids.length > remainingCandidateCapacity) throw new SafeError("QUERY_TOO_LARGE", "The all-folder search exceeds the configured candidate bound; narrow the search.");
+          totalCandidates += uids.length;
+          if (uids.length === 0) continue;
+          const expectedUids = new Set(uids);
+          for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) {
+            if (!Number.isSafeInteger(message.uid) || !expectedUids.delete(message.uid)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an unexpected or duplicate search result.");
+            candidates.push(this.summary(folder, message, uidValidity));
+          }
+          if (expectedUids.size > 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox changed while the search was running; retry the query.");
+        } finally { lock.release(); }
+      }
+
+      const generationHash = createHash("sha256").update(JSON.stringify(generations)).digest("hex");
+      if (decodedCursor && decodedCursor.generationHash !== generationHash) throw new SafeError("REFERENCE_STALE", "The mailbox folders changed since this search cursor was created.");
+      if (decodedCursor && !folders.includes(decodedCursor.folder)) throw new SafeError("REFERENCE_STALE", "The search cursor folder is no longer selectable.");
+      const seen = new Set<string>();
+      const unique = candidates.filter((item) => {
+        const key = item.messageId ? `id:${item.messageId}` : `ref:${item.folder}\u0000${item.uid}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      unique.sort(compareSearchSummary);
+      const remaining = decodedCursor ? unique.filter((item) => comesAfterSearchCursor(item, decodedCursor)) : unique;
+      const messages = remaining.slice(0, bounded);
+      const truncated = remaining.length > bounded;
+      const last = messages.at(-1);
+      const lastDateMs = searchDateMs(last?.date);
+      const nextCursor = truncated && last ? encodeAllFolderCursor({ accountId: this.options.account.accountId, queryHash, generationHash, dateMs: Number.isFinite(lastDateMs) ? lastDateMs : null, folder: last.folder, uid: last.uid }) : undefined;
+      return { messages, truncated, foldersSearched: folders.length, ...(nextCursor === undefined ? {} : { nextCursor }) };
+    });
+  }
+
+  async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number, filters?: MailSearchFilters): Promise<readonly MailSummary[]> {
+    // Single-folder pages may request one internal lookahead; the service removes it.
+    const bounded = Math.min(Math.max(limit, 1), this.maxResults + 1, 101);
+    return this.withClient(async (client) => {
+      const lock = await client.getMailboxLock(folder);
+      try {
+        const uidValidity = this.validateUidValidity(client, expectedUidValidity);
+        const uidNext = this.selectedUidNext(client);
+        const criteria: SearchObject[] = [];
+        if (query) criteria.push({ or: [{ text: query }, { subject: query }, { header: { Subject: query } }] });
+        if (filters) criteria.push(...this.searchCriteria(filters));
+        const base: SearchObject = criteria.length === 0 ? { all: true } : Object.assign({}, ...criteria) as SearchObject;
+        if (afterUid !== undefined && (!Number.isSafeInteger(afterUid) || afterUid < 0 || afterUid > IMAP_UID_MAX)) throw new SafeError("REFERENCE_INVALID", "The mailbox cursor UID is invalid.");
+        const uids = await this.searchUidsInWindows(client, base, afterUid === undefined ? 1 : afterUid + 1, uidNext, bounded, { remaining: IMAP_UID_SEARCH_WINDOW_BUDGET });
+        const remaining = new Set(uids);
+        const result: MailSummary[] = [];
+        for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) {
+          if (!Number.isSafeInteger(message.uid) || !remaining.delete(message.uid)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an unexpected or duplicate mailbox message.");
+          result.push(this.summary(folder, message, uidValidity));
+        }
+        if (remaining.size > 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox changed while the search page was being fetched; retry the query.");
+        return result;
+      } finally { lock.release(); }
+    });
   }
 
   async list(folder: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number): Promise<readonly MailSummary[]> { return this.listMessages(folder, undefined, limit, afterUid, expectedUidValidity); }
@@ -271,22 +439,70 @@ export class ImapFlowMailAdapter implements ImapAdapter {
     return criteria;
   }
 
-  async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const uidValidity = this.validateUidValidity(client, target.uidValidity); const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true }); if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); const parsed = await simpleParser(message.source); const summary = this.summary(target.folder, message, uidValidity); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item) => ({ ...(item.filename === undefined ? {} : { filename: item.filename }), ...(item.contentType === undefined ? {} : { contentType: item.contentType }), ...(item.size === undefined ? {} : { size: item.size }), ...(item.contentDisposition === undefined ? {} : { disposition: item.contentDisposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
+  async read(reference: string): Promise<MailMessage> { const target = decodeReference(reference, this.options.account.accountId); return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try { const uidValidity = this.validateUidValidity(client, target.uidValidity); const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true }); if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found."); if (!Number.isSafeInteger(message.size) || message.size !== message.source.length || message.size > this.maxReadBytes) throw new SafeError("MESSAGE_TOO_LARGE", "The complete message exceeds the safe read bound or could not be verified as complete."); const parsed = await simpleParser(message.source); const summary = this.summary(target.folder, message, uidValidity); const references = messageIdHeaders(headerValue(parsed.headers, "references")); const forwarding = safeForwarding(parsed.headers); return { ...summary, ...(references.length === 0 ? {} : { references }), ...(forwarding === undefined ? {} : { forwarding }), ...(parsed.text === undefined ? {} : { text: parsed.text }), ...(typeof parsed.html === "string" ? { html: parsed.html } : {}), attachments: parsed.attachments.map((item) => ({ ...(item.filename === undefined ? {} : { filename: item.filename }), ...(item.contentType === undefined ? {} : { contentType: item.contentType }), ...(item.size === undefined ? {} : { size: item.size }), ...(item.contentDisposition === undefined ? {} : { disposition: item.contentDisposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }), content: Buffer.from(item.content) })) }; } finally { lock.release(); } }); }
+
+  /** Return the exact bounded octets whose length was verified; never attest a separate download stream. */
+  private async verifyRawAttachmentPart(client: ImapFlowClient, uid: number, part: string, expectedSize: number): Promise<Buffer> {
+    const maximumRawBytes = this.maxAttachmentDownloadBytes * 4 + 65_536;
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return a verifiable attachment-part size.");
+    if (expectedSize > maximumRawBytes) throw new SafeError("ATTACHMENT_TOO_LARGE", "The encoded attachment exceeds the safe verification bound.");
+    let offset = 0;
+    const chunks: Buffer[] = [];
+    while (offset < expectedSize) {
+      const requested = Math.min(64 * 1024, expectedSize - offset);
+      const response = await client.fetchOne(uid, { uid: true, bodyParts: [{ key: part, start: offset, maxLength: requested }] }, { uid: true });
+      if (!response || response.uid !== uid) throw new SafeError("ATTACHMENT_CHANGED", "The attachment message changed while its raw MIME part was being verified.");
+      const bytes = response.bodyParts?.get(part);
+      if (!bytes || bytes.length !== requested) throw new SafeError("ATTACHMENT_CHANGED", "The raw MIME attachment part was incomplete or inconsistent with its announced size.");
+      chunks.push(Buffer.from(bytes));
+      offset += bytes.length;
+    }
+    const sentinel = await client.fetchOne(uid, { uid: true, bodyParts: [{ key: part, start: expectedSize, maxLength: 1 }] }, { uid: true });
+    if (!sentinel || sentinel.uid !== uid) throw new SafeError("ATTACHMENT_CHANGED", "The attachment message changed before its raw MIME part was fully verified.");
+    const extra = sentinel.bodyParts?.get(part);
+    if (extra && extra.length > 0) throw new SafeError("ATTACHMENT_CHANGED", "The raw MIME attachment part exceeds its announced size.");
+    return Buffer.concat(chunks, expectedSize);
+  }
+
+  async listAttachments(reference: string): Promise<readonly MailAttachment[]> {
+    const target = decodeReference(reference, this.options.account.accountId);
+    return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try {
+      this.validateUidValidity(client, target.uidValidity);
+      const message = await client.fetchOne(target.uid, { uid: true, size: true, bodyStructure: true }, { uid: true });
+      if (!message) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found.");
+      if (!message.bodyStructure) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return message attachment metadata.");
+      return attachmentParts(message.bodyStructure).map((item) => ({ ...(safeHeader(item.filename, 255) === undefined ? {} : { filename: item.filename }), ...(safeHeader(item.contentType, 128) === undefined ? {} : { contentType: item.contentType }), ...(Number.isSafeInteger(item.size) && item.size! >= 0 ? { size: item.size } : {}), ...(item.disposition === undefined ? {} : { disposition: item.disposition }), ...(item.contentId === undefined ? {} : { contentId: item.contentId }) }));
+    } finally { lock.release(); } });
+  }
 
   async downloadAttachment(reference: string, attachmentIndex: number): Promise<DownloadedAttachment> {
     if (!Number.isSafeInteger(attachmentIndex) || attachmentIndex < 0 || attachmentIndex > 31) throw new SafeError("INVALID_INPUT", "Attachment index is out of range.");
     const target = decodeReference(reference, this.options.account.accountId);
     return this.withClient(async (client) => { const lock = await client.getMailboxLock(target.folder); try {
       this.validateUidValidity(client, target.uidValidity);
-      const message = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, source: { maxLength: this.maxReadBytes } }, { uid: true });
-      if (!message || !message.source) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found.");
-      const parsed = await simpleParser(message.source); const item = parsed.attachments[attachmentIndex];
+      const message = await client.fetchOne(target.uid, { uid: true, size: true, bodyStructure: true }, { uid: true });
+      if (!message) throw new SafeError("MESSAGE_NOT_FOUND", "Message was not found.");
+      if (message.uid !== target.uid) throw new SafeError("ATTACHMENT_CHANGED", "The provider returned attachment metadata for a different message.");
+      if (!Number.isSafeInteger(message.size) || message.size! < 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return a verifiable full-message size.");
+      if (!message.bodyStructure) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return message attachment metadata.");
+      const item = attachmentParts(message.bodyStructure)[attachmentIndex];
       if (!item) throw new SafeError("INVALID_INPUT", "Attachment index is out of range.");
-      const filename = item.filename; const contentType = item.contentType; const content = Buffer.from(item.content);
-      if (!filename || filename.length > 255 || /[\r\n\\/\u0000]/.test(filename) || !contentType || contentType.length > 128 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(contentType) || item.contentDisposition?.toLowerCase() === "inline" || item.contentId) throw new SafeError("UNSUPPORTED_OPERATION", "This attachment is inline or has unsafe metadata.");
-      if (item.size !== undefined && item.size !== content.length) throw new SafeError("ATTACHMENT_CHANGED", "The attachment changed while it was being read.");
-      if (content.length > Math.min(this.maxReadBytes, 5_000_000)) throw new SafeError("INVALID_INPUT", "The attachment exceeds the bounded download size.");
-      const { createHash } = await import("node:crypto");
+      const filename = item.filename; const contentType = item.contentType;
+      if (!filename || filename === "." || filename === ".." || filename.length > 255 || /[\u0000-\u001f\u007f\\/]/.test(filename) || !contentType || contentType.length > 128 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(contentType) || item.disposition?.toLowerCase() === "inline" || item.contentId) throw new SafeError("UNSUPPORTED_OPERATION", "This attachment is inline or has unsafe metadata.");
+      const encoding = (item.encoding ?? "binary").toLowerCase();
+      if (!["base64", "quoted-printable", "7bit", "8bit", "binary"].includes(encoding)) throw new SafeError("UNSUPPORTED_OPERATION", "The attachment transfer encoding is unsupported.");
+      const raw = await this.verifyRawAttachmentPart(client, target.uid, item.part, item.size ?? Number.NaN);
+      // MIME decoders are deliberately forgiving; reject malformed transfer syntax before decoding.
+      if (encoding === "base64") {
+        const encoded = raw.toString("latin1").replace(/[\r\n\t ]/g, "");
+        if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new SafeError("ATTACHMENT_CHANGED", "The attachment has malformed base64 transfer data.");
+      }
+      // Force a single opaque attachment so mailparser does not transform text or interpret nested MIME.
+      const headers = Buffer.from(`Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="part.bin"\r\nContent-Transfer-Encoding: ${encoding}\r\n\r\n`, "ascii");
+      const parsed = await simpleParser(Buffer.concat([headers, raw]));
+      if (parsed.attachments.length !== 1) throw new SafeError("ATTACHMENT_CHANGED", "The verified attachment could not be decoded unambiguously.");
+      const content = Buffer.from(parsed.attachments[0]!.content);
+      if (content.length > this.maxAttachmentDownloadBytes) throw new SafeError("ATTACHMENT_TOO_LARGE", "The attachment exceeds the configured download bound.");
       return { filename, contentType, size: content.length, sha256: createHash("sha256").update(content).digest("hex"), content };
     } finally { lock.release(); } });
   }
@@ -295,10 +511,12 @@ export class ImapFlowMailAdapter implements ImapAdapter {
     const target = decodeReference(action.messageReference, this.options.account.accountId);
     return this.withClient(async (client) => {
       const lock = await client.getMailboxLock(target.folder);
+      let sourceReleased = false;
       try {
         const uidValidity = this.validateUidValidity(client, target.uidValidity);
         let resultUid = target.uid;
         let resultUidValidity = uidValidity;
+        let confirmationFolder = target.folder;
         if (action.type === "markRead" || action.type === "markUnread" || action.type === "addFlag" || action.type === "removeFlag") {
           const method = action.type === "markRead" || action.type === "addFlag" ? client.messageFlagsAdd : client.messageFlagsRemove;
           const flags = action.type === "markRead" || action.type === "markUnread" ? ["\\Seen"] : [action.flag!];
@@ -318,15 +536,27 @@ export class ImapFlowMailAdapter implements ImapAdapter {
           if (!method) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support this mailbox mutation.");
           const moved = await method.call(client, target.uid, destination, { uid: true });
           const movedMeta = moved && !Array.isArray(moved) && typeof moved === "object" ? moved : undefined;
-          const mappedUid = Array.isArray(moved) ? moved[0] : movedMeta?.uidMap instanceof Map ? movedMeta.uidMap.get(target.uid) : undefined;
-          if (typeof mappedUid !== "number" || !Number.isSafeInteger(mappedUid) || mappedUid < 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the mutation.");
+          const mappedUid = movedMeta?.uidMap instanceof Map ? movedMeta.uidMap.get(target.uid) : undefined;
+          if (typeof mappedUid !== "number" || !Number.isSafeInteger(mappedUid) || mappedUid < 1 || mappedUid > IMAP_UID_MAX) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the mutation.");
+          const rawDestinationUidValidity = movedMeta?.uidValidity;
+          const destinationUidValidity = typeof rawDestinationUidValidity === "bigint" ? Number(rawDestinationUidValidity) : rawDestinationUidValidity;
+          if (typeof destinationUidValidity !== "number" || !Number.isSafeInteger(destinationUidValidity) || destinationUidValidity < 1 || destinationUidValidity > IMAP_UID_MAX) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the destination mailbox generation.");
           resultUid = mappedUid;
-          if (typeof movedMeta?.uidValidity === "bigint") resultUidValidity = Number(movedMeta.uidValidity);
-          else if (typeof movedMeta?.uidValidity === "number" && Number.isSafeInteger(movedMeta.uidValidity)) resultUidValidity = movedMeta.uidValidity;
+          resultUidValidity = destinationUidValidity;
+          confirmationFolder = destination;
         }
-        const confirmationFolder = action.type === "move" || action.type === "trash" || action.type === "restore" ? (action.type === "restore" ? this.options.account.inboxFolder : action.type === "trash" ? (await client.list()).find((folder) => folder.specialUse?.toLowerCase() === "\\trash".toLowerCase() && !folder.flags?.has("\\Noselect") && !folder.flags?.has("\\NOSELECT"))?.path : action.destinationFolder!) : target.folder;
         if (!confirmationFolder) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the destination mailbox.");
-        if (action.type === "move" || action.type === "copy" || action.type === "trash" || action.type === "restore") return { action: action.type, reference: encodeReference(this.options.account.accountId, confirmationFolder, resultUid, resultUidValidity), folder: confirmationFolder, uid: resultUid, flags: [] };
+        if (action.type === "move" || action.type === "copy" || action.type === "trash" || action.type === "restore") {
+          sourceReleased = true;
+          lock.release();
+          const destinationLock = await client.getMailboxLock(confirmationFolder);
+          try {
+            if (this.selectedUidValidity(client) !== resultUidValidity) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the destination mailbox generation.");
+            const confirmed = await client.fetchOne(resultUid, { uid: true, flags: true }, { uid: true });
+            if (!confirmed || confirmed.uid !== resultUid) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the mutation.");
+            return { action: action.type, reference: encodeReference(this.options.account.accountId, confirmationFolder, resultUid, resultUidValidity), folder: confirmationFolder, uid: resultUid, flags: [...(confirmed.flags ?? [])] };
+          } finally { destinationLock.release(); }
+        }
         const confirmed = await client.fetchOne(resultUid, { uid: true, flags: true }, { uid: true });
         if (!confirmed || confirmed.uid !== resultUid) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the mutation.");
         const flags = [...(confirmed.flags ?? [])];
@@ -336,51 +566,103 @@ export class ImapFlowMailAdapter implements ImapAdapter {
         if (action.type === "addFlag" && !hasFlag(action.flag!)) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the flag.");
         if (action.type === "removeFlag" && hasFlag(action.flag!)) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox provider did not confirm the flag removal.");
         return { action: action.type, reference: encodeReference(this.options.account.accountId, confirmationFolder, resultUid, resultUidValidity), folder: confirmationFolder, uid: resultUid, flags };
-      } finally { lock.release(); }
+      } finally { if (!sourceReleased) lock.release(); }
     });
   }
 
-  async thread(folder: string, anchorReference: string, limit = this.maxResults): Promise<readonly MailSummary[]> {
+  async thread(folder: string, anchorReference: string, limit = this.maxResults, scope: "currentFolder" | "allFolders" = "allFolders"): Promise<readonly MailSummary[]> {
     const bounded = Math.min(Math.max(limit, 1), this.maxResults);
     const target = decodeReference(anchorReference, this.options.account.accountId);
     if (target.folder !== folder) throw new SafeError("INVALID_INPUT", "Thread folder does not match message reference folder.");
-    const anchor = await this.read(anchorReference);
-    const ids = [...new Set([anchor.messageId, anchor.inReplyTo, ...(anchor.references ?? [])].filter((value): value is string => typeof value === "string" && /^<[^<>\r\n]+>$/.test(value)))].slice(0, 100);
-    if (ids.length === 0) return [anchor].slice(0, bounded);
     return this.withClient(async (client) => {
-      const lock = await client.getMailboxLock(folder);
+      const folders = scope === "allFolders"
+        ? [...new Set((await client.list()).filter((item) => !item.flags?.has("\\Noselect") && !item.flags?.has("\\NOSELECT")).map((item) => item.path))]
+        : [folder];
+      if (folders.length > 100) throw new SafeError("THREAD_TOO_LARGE", "The provider has too many selectable folders for a bounded thread lookup.");
+      if (!folders.includes(target.folder)) throw new SafeError("MESSAGE_NOT_FOUND", "The anchor message folder is not selectable.");
+
+      let anchor: FetchMessageObject;
+      let anchorUidValidity: number;
+      let anchorReferences: string[];
+      const anchorLock = await client.getMailboxLock(target.folder);
       try {
-        const uidValidity = this.validateUidValidity(client, target.uidValidity);
-        const criteria: SearchObject[] = ids.flatMap((id) => [
-          { header: { "Message-ID": id } },
-          { header: { "In-Reply-To": id } },
-          { header: { References: id } },
-        ]);
-        const uidSet = new Set<number>();
-        for (const criterion of criteria) {
-          const found = await client.search(criterion, { uid: true });
-          for (const uid of (Array.isArray(found) ? found : [])) {
-            if (!Number.isSafeInteger(uid) || uid < 1) continue;
-            uidSet.add(uid);
-            if (uidSet.size >= bounded) break;
+        anchorUidValidity = this.validateUidValidity(client, target.uidValidity);
+        const fetched = await client.fetchOne(target.uid, { uid: true, envelope: true, flags: true, internalDate: true, size: true, headers: ["References"] }, { uid: true });
+        if (!fetched || fetched.uid !== target.uid) throw new SafeError("MESSAGE_NOT_FOUND", "The anchor message was not found.");
+        anchor = fetched;
+        const parsedHeaders = await simpleParser(fetched.headers ?? Buffer.alloc(0));
+        anchorReferences = messageIdHeaders(headerValue(parsedHeaders.headers, "references"));
+      } finally { anchorLock.release(); }
+
+      const rawIds = [...new Set([anchor.envelope?.messageId, anchor.envelope?.inReplyTo, ...anchorReferences].filter((value): value is string => typeof value === "string" && /^<[^<>\r\n]+>$/.test(value)))];
+      if (rawIds.length > 50) throw new SafeError("THREAD_TOO_LARGE", "The anchor has too many reference identifiers for a bounded thread lookup.");
+      const ids = rawIds;
+      const anchorSummary = this.summary(target.folder, anchor, anchorUidValidity);
+      const summaries: MailSummary[] = [{ ...anchorSummary, ...(anchorReferences.length === 0 ? {} : { references: anchorReferences }) }];
+      const candidateLimit = Math.min(Math.max(this.maxResults * 20, bounded * 20), 2_000);
+      const searchBudget = { remaining: IMAP_ALL_FOLDER_SEARCH_WINDOW_BUDGET };
+      let totalCandidates = 0;
+
+      for (const candidateFolder of folders) {
+        const lock = await client.getMailboxLock(candidateFolder);
+        try {
+          const uidValidity = candidateFolder === target.folder ? this.validateUidValidity(client, target.uidValidity) : this.selectedUidValidity(client);
+          const uidNext = this.selectedUidNext(client);
+          const uidSet = new Set<number>();
+          const criteria: SearchObject[] = ids.flatMap((id) => [
+            { header: { "Message-ID": id } },
+            { header: { "In-Reply-To": id } },
+            { header: { References: id } },
+          ]);
+          for (const criterion of criteria) {
+            let found: number[];
+            try { found = await this.searchUidsInWindows(client, criterion, 1, uidNext, candidateLimit + 1, searchBudget); }
+            catch (error) {
+              if (error instanceof SafeError && error.code === "QUERY_TOO_LARGE") throw new SafeError("THREAD_TOO_LARGE", "The thread search exceeded its bounded UID scan.");
+              throw error;
+            }
+            if (found.length > candidateLimit) throw new SafeError("THREAD_TOO_LARGE", "The provider returned too many thread candidates for a bounded lookup.");
+            for (const uid of found) {
+              if (!(candidateFolder === target.folder && uid === target.uid)) uidSet.add(uid);
+              if (uidSet.size + totalCandidates > candidateLimit) throw new SafeError("THREAD_TOO_LARGE", "The thread exceeds the total bounded candidate limit.");
+            }
           }
-        }
-        const uids = [...uidSet];
-        const messages: MailSummary[] = [anchor];
-        const seen = new Set([`${anchor.folder}\u0000${anchor.uid}`]);
-        for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) {
-          const key = `${folder}\u0000${message.uid}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          messages.push(this.summary(folder, message, uidValidity));
-          if (messages.length >= bounded) break;
-        }
-        return messages.slice(0, bounded);
-      } finally { lock.release(); }
+          totalCandidates += uidSet.size;
+          if (uidSet.size === 0) continue;
+          const expectedUids = new Set(uidSet);
+          for await (const message of client.fetch([...uidSet], { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) {
+            if (!Number.isSafeInteger(message.uid) || !expectedUids.delete(message.uid)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an unexpected or duplicate thread candidate.");
+            if (!message.envelope?.messageId || !/^<[^<>\r\n]+>$/.test(message.envelope.messageId)) throw new SafeError("PROVIDER_UNAVAILABLE", "A thread message has no valid Message-ID.");
+            summaries.push(this.summary(candidateFolder, message, uidValidity));
+          }
+          if (expectedUids.size > 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The thread changed while it was being read; retry the query.");
+        } finally { lock.release(); }
+      }
+
+      const seen = new Set<string>();
+      const unique = summaries.filter((item) => {
+        const key = item.messageId ? `id:${item.messageId}` : `ref:${item.folder}\u0000${item.uid}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      unique.sort((left, right) => {
+        const leftDate = left.date ? Date.parse(left.date) : Number.POSITIVE_INFINITY;
+        const rightDate = right.date ? Date.parse(right.date) : Number.POSITIVE_INFINITY;
+        return leftDate - rightDate || left.folder.localeCompare(right.folder) || left.uid - right.uid;
+      });
+      if (unique.length > bounded) throw new SafeError("THREAD_TOO_LARGE", "The thread exceeds the requested result limit; narrow the query or increase the limit.");
+      return unique;
     });
   }
 
   async verifySent(messageIdHeader: string): Promise<boolean> { if (!/^<[^<>\r\n]+>$/.test(messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Message-ID header is invalid."); return this.withClient(async (client) => { const lock = await client.getMailboxLock(this.options.account.sentFolder); try { return await this.exactSentExists(client, messageIdHeader); } finally { lock.release(); } }); }
 
-  private summary(folder: string, message: FetchMessageObject, uidValidity: number): MailSummary { const envelope = message.envelope; return { reference: encodeReference(this.options.account.accountId, folder, message.uid, uidValidity), folder, uid: message.uid, uidValidity, ...(envelope?.subject === undefined ? {} : { subject: envelope.subject }), ...(envelope?.messageId === undefined ? {} : { messageId: envelope.messageId }), ...(envelope?.date === undefined ? {} : { date: new Date(envelope.date).toISOString() }), from: addresses(envelope?.from), to: addresses(envelope?.to), cc: addresses(envelope?.cc), ...(envelope?.replyTo === undefined ? {} : { replyTo: addresses(envelope.replyTo) }), ...(envelope?.inReplyTo === undefined ? {} : { inReplyTo: safeHeader(envelope.inReplyTo) }), ...(message.size === undefined ? {} : { size: message.size }), flags: [...(message.flags ?? [])] }; }
+  private summary(folder: string, message: FetchMessageObject, uidValidity: number): MailSummary {
+    const envelope = message.envelope;
+    const dateValue = envelope?.date;
+    const dateMs = dateValue === undefined ? Number.NaN : dateValue instanceof Date ? dateValue.getTime() : Date.parse(dateValue);
+    const date = Number.isFinite(dateMs) ? new Date(dateMs).toISOString() : undefined;
+    return { reference: encodeReference(this.options.account.accountId, folder, message.uid, uidValidity), folder, uid: message.uid, uidValidity, ...(envelope?.subject === undefined ? {} : { subject: envelope.subject }), ...(envelope?.messageId === undefined ? {} : { messageId: envelope.messageId }), ...(date === undefined ? {} : { date }), from: addresses(envelope?.from), to: addresses(envelope?.to), cc: addresses(envelope?.cc), ...(envelope?.replyTo === undefined ? {} : { replyTo: addresses(envelope.replyTo) }), ...(envelope?.inReplyTo === undefined ? {} : { inReplyTo: safeHeader(envelope.inReplyTo) }), ...(message.size === undefined ? {} : { size: message.size }), flags: [...(message.flags ?? [])] };
+  }
 }

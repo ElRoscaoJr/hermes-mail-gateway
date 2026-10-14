@@ -15,10 +15,12 @@ class FakeMailboxAdapter implements ImapAdapter {
   async list(folder: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`list:${folder}:${limit}`); return [message(folder, `${this.label}-list`, this.label)]; }
   async search(folder: string, query: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`search:${folder}:${query}:${limit}`); return [message(folder, `${this.label}-search`, query)]; }
   async searchWithFilters(folder: string, query: string | undefined, filters: Record<string, unknown>, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`filtered:${folder}:${query ?? ""}:${Object.keys(filters).sort().join(",")}:${limit}`); return [message(folder, `${this.label}-filtered`, "filtered")]; }
+  async searchAllFolders(query: string | undefined, filters: Record<string, unknown> | undefined, limit?: number, cursor?: string) { this.calls.push(`searchAll:${query ?? ""}:${Object.keys(filters ?? {}).sort().join(",")}:${limit}:${cursor ?? ""}`); return { messages: [message("Inbox", `${this.label}-global`, "global result")], truncated: true, foldersSearched: 2, nextCursor: "opaque-next" }; }
   async listFolders(): Promise<readonly MailFolder[]> { this.calls.push("folders"); return [{ path: "Inbox", name: "Inbox", delimiter: "/" }, { path: "Archive/Receipts", name: "Receipts", delimiter: "/", specialUse: "\\All" }]; }
+  async listAttachments(reference: string) { this.calls.push(`attachments:${reference}`); return (this.source?.attachments ?? []).map(({ content: _content, ...metadata }) => metadata); }
   async read(reference: string): Promise<MailMessage> { this.calls.push(`read:${reference}`); return { ...message("Inbox", reference, this.label), text: `safe body ${this.label}`, attachments: [], ...this.source }; }
   async downloadAttachment(reference: string, attachmentIndex: number) { this.calls.push(`download:${reference}:${attachmentIndex}`); return { filename: "safe.txt", contentType: "text/plain", size: 4, sha256: "a".repeat(64), content: Buffer.from("safe") }; }
-  async thread(folder: string, reference: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`thread:${folder}:${reference}:${limit}`); return [message(folder, `${this.label}-thread`, "thread subject")]; }
+  async thread(folder: string, reference: string, limit?: number): Promise<readonly MailSummary[]> { this.calls.push(`thread:${folder}:${reference}:${limit}`); return [message(folder, reference, "thread subject")]; }
   async mutate(action: { type: "move" | "copy" | "markRead" | "markUnread" | "addFlag" | "removeFlag" | "trash" | "restore"; messageReference: string; destinationFolder?: string; flag?: "\\Flagged" | "\\Answered" }): Promise<{ action: typeof action.type; reference: string; folder: string; uid: number; flags: readonly string[] }> { this.calls.push(`mutate:${action.type}`); return { action: action.type, reference: action.messageReference, folder: action.destinationFolder ?? "Inbox", uid: 7, flags: [] }; }
   async verifySent(messageIdHeader: string): Promise<boolean> { this.calls.push(`verify:${messageIdHeader}`); return this.verified; }
   async checkConnectivity(): Promise<void> { this.calls.push("health:imap"); }
@@ -39,6 +41,23 @@ function serviceFixture() {
 }
 
 const context = { caller: "Hermes main" as const, correlationId: "corr-service" };
+
+test("draft preparation succeeds with no recipients", async () => {
+  const { service, db } = serviceFixture();
+  try {
+    const prepared = await service.mailPrepare({ accountId: "acct", intent: "draft", idempotencyKey: "draft-no-recipients-123", subject: "Working draft", textBody: "Draft body" }, context) as { intent: string; recipients: readonly string[] };
+    assert.equal(prepared.intent, "draft");
+    assert.deepEqual(prepared.recipients, []);
+  } finally { db.close(); }
+});
+
+test("service rejects send preparation without any recipient", async () => {
+  const base = fixture();
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: new FakeMailboxAdapter("first"), smtp: new FakeSmtpAdapter() }]]));
+  try {
+    await assert.rejects(service.mailPrepare({ accountId: "acct", idempotencyKey: "empty-recipient-123", recipients: [], subject: "No recipient" }, context), { code: "INVALID_INPUT" });
+  } finally { base.db.close(); }
+});
 
 test("service execution routes the configured gateway-managed Sent policy", async () => {
   const { accounts, repo } = fixture();
@@ -189,16 +208,91 @@ test("mailQuery dispatches supported operations to the account-scoped mailbox ad
   assert.deepEqual(second.calls, ["verify:<sent@example.test>"]);
 });
 
+test("mailQuery read exposes only message bodies and attachment metadata", async () => {
+  const base = fixture();
+  const bytes = Buffer.from("synthetic attachment bytes");
+  const readMessage: MailMessage = { ...message("Inbox", "read-ref", "Read me"), uidValidity: 41, text: "safe message body", attachments: [{ filename: "private.txt", contentType: "text/plain", size: bytes.length, content: bytes }] };
+  const imap: ImapAdapter = { verifySent: async () => false, read: async () => readMessage };
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
+  const result = await service.mailQuery({ accountId: "acct", operation: "read", messageReference: readMessage.reference }, context) as { message: Record<string, unknown> };
+  assert.equal(result.message.uidValidity, undefined);
+  assert.deepEqual(result.message.attachments, [{ filename: "private.txt", contentType: "text/plain", size: bytes.length }]);
+  base.db.close();
+});
+
 test("mailQuery returns bounded attachment metadata and thread summaries", async () => {
   const base = fixture();
   const first = new FakeMailboxAdapter("first", true, { attachments: [{ filename: "invoice.pdf", contentType: "application/pdf", size: 12, content: Buffer.from("secret bytes") }] });
   const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: first, smtp: new FakeSmtpAdapter() }]]));
   const attachments = await service.mailQuery({ accountId: "acct", operation: "attachments", messageReference: "ref-1", limit: 1 }, context);
   assert.deepEqual(attachments, { attachments: [{ filename: "invoice.pdf", contentType: "application/pdf", size: 12 }] });
+  assert.deepEqual(first.calls, ["attachments:ref-1"]);
   assert.doesNotMatch(JSON.stringify(attachments), /secret bytes|"content"/i);
   const thread = await service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "ref-1", limit: 1 }, context);
-  assert.deepEqual(thread, { messages: [{ folder: "Inbox", reference: "first-thread", uid: 7, subject: "thread subject", messageId: "<first-thread@example.test>", from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 }] });
+  assert.deepEqual(thread, { scope: "allFolders", complete: true, messages: [{ folder: "Inbox", reference: "ref-1", uid: 7, subject: "thread subject", messageId: "<ref-1@example.test>", from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 }] });
 });
+test("thread query refuses to claim complete when the adapter omits the anchor", async () => {
+  const base = fixture();
+  const imap = new FakeMailboxAdapter("first");
+  imap.thread = async (folder) => [message(folder, "another-message", "subject")];
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
+  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "anchor-ref" }, context), (error: unknown) => error instanceof SafeError && error.code === "PROVIDER_UNAVAILABLE");
+});
+
+test("thread query rejects an adapter result larger than the requested bound", async () => {
+  const base = fixture();
+  const imap = new FakeMailboxAdapter("first");
+  imap.thread = async (folder, reference) => [message(folder, reference, "anchor"), message(folder, "extra-message", "extra")];
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
+  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "anchor-ref", limit: 1 }, context), (error: unknown) => error instanceof SafeError && error.code === "THREAD_TOO_LARGE");
+});
+
+test("mailQuery optionally expands a bounded thread with bodies and attachment metadata only", async () => {
+  const base = fixture();
+  const first = new FakeMailboxAdapter("first", true, { text: "full message text", html: "<p>full message</p>", attachments: [{ filename: "note.txt", contentType: "text/plain", size: 6, content: Buffer.from("secret") }] });
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: first, smtp: new FakeSmtpAdapter() }]]));
+  const thread = await service.mailQuery({ accountId: "acct", operation: "thread", messageReference: "anchor-ref", includeBodies: true }, context);
+  assert.deepEqual(thread, { scope: "allFolders", complete: true, messages: [{ folder: "Inbox", reference: "anchor-ref", uid: 7, subject: "first", messageId: "<anchor-ref@example.test>", from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42, text: "full message text", html: "<p>full message</p>", attachments: [{ filename: "note.txt", contentType: "text/plain", size: 6 }] }] });
+  assert.deepEqual(first.calls, ["thread:Inbox:anchor-ref:20", "read:anchor-ref"]);
+  assert.doesNotMatch(JSON.stringify(thread), /secret|"content"/i);
+});
+test("all-folder service pagination preserves the adapter page boundary", async () => {
+  const base = fixture();
+  const items = [message("Inbox", "one", "one"), message("Inbox", "two", "two"), message("Inbox", "three", "three")];
+  const imap: ImapAdapter = { verifySent: async () => false, searchAllFolders: async (_q, _f, limit = 20, cursor) => {
+    const start = cursor === undefined ? 0 : Number(cursor);
+    const messages = items.slice(start, start + limit);
+    const truncated = start + limit < items.length;
+    return { messages, truncated, foldersSearched: 1, ...(truncated ? { nextCursor: String(start + limit) } : {}) };
+  } };
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
+  try {
+    const seen: string[] = []; let cursor: string | undefined;
+    for (let index = 0; index < 3; index++) {
+      const page = await service.mailQuery({ accountId: "acct", operation: "search", query: "token", searchScope: "allFolders", limit: 1, ...(cursor === undefined ? {} : { cursor }) }, context) as { messages: Array<{ reference: string }>; nextCursor?: string };
+      seen.push(...page.messages.map((item) => item.reference)); cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+    assert.deepEqual(seen, ["one", "two", "three"]);
+  } finally { base.db.close(); }
+});
+
+test("mailQuery supports explicit all-folder search and exposes truncation metadata", async () => {
+  const base = fixture();
+  const first = new FakeMailboxAdapter("first");
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap: first, smtp: new FakeSmtpAdapter() }]]));
+  const result = await service.mailQuery({ accountId: "acct", operation: "search", query: "invoice", searchScope: "allFolders", limit: 2 }, context);
+  assert.deepEqual(result, { messages: [{ folder: "Inbox", reference: "first-global", uid: 7, subject: "global result", messageId: "<first-global@example.test>", from: [{ address: "sender@example.test" }], to: [{ address: "recipient@example.test" }], cc: [], flags: [], size: 42 }], truncated: true, foldersSearched: 2, nextCursor: "opaque-next" });
+  await service.mailQuery({ accountId: "acct", operation: "search", query: "invoice", searchScope: "allFolders", cursor: "opaque-next", limit: 2 }, context);
+  assert.deepEqual(first.calls, ["searchAll:invoice::2:", "searchAll:invoice::2:opaque-next"]);
+});
+test("all-folder search returns an explicit unsupported-operation error when the adapter lacks that capability", async () => {
+  const base = fixture();
+  const imap: ImapAdapter = { verifySent: async () => false };
+  const service = new MailGatewayService(base.accounts, base.repo, new Map([["acct", { imap, smtp: new FakeSmtpAdapter() }]]));
+  await assert.rejects(service.mailQuery({ accountId: "acct", operation: "search", query: "invoice", searchScope: "allFolders" }, context), (error: unknown) => error instanceof SafeError && error.code === "UNSUPPORTED_OPERATION");
+});
+
 test("mailQuery structured search and attachment download stay account-bound and public-safe", async () => {
   const { service, first } = serviceFixture();
   const filtered = await service.mailQuery({ accountId: "acct", operation: "search", search: { from: "from@example.test", isRead: true }, limit: 1 }, context) as { messages: MailSummary[] };

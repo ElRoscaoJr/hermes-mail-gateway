@@ -62,6 +62,18 @@ Do not use it to bypass the gateway with raw SMTP/IMAP commands, guess localized
 - Gmail native labels and Zoho native tags may require provider-specific APIs; do not pretend that a folder or flag is an equivalent native label.
 - Real-mail tests must use only operator-authorized recipients and should use disposable data and attachment roots.
 
+## Capability boundaries
+
+- Gmail/Zoho use IMAP/SMTP with operator-provisioned app passwords where supported; no native API/OAuth or labels/tags parity.
+- For global search set `operation: "search", searchScope: "allFolders"`; pass `nextCursor` unchanged on the same query. Large or sparse UID scans can return `QUERY_TOO_LARGE`. Restart on stale cursors; results are not transactional snapshots.
+- For threads set `threadScope` explicitly and request `includeBodies` only when needed. Relationships are inferred from anchor headers, not a universal complete conversation. Limits fail explicitly, rather than silently truncating a thread.
+- For selected download use `operation: "attachments"` plus `attachmentIndex`. Returned bytes are decoded from the same bounded raw MIME section whose size/UID were checked. Hashes identify returned content, not server authenticity. Base64 adds response overhead.
+- Draft intent may omit recipients; sending requires To/CC/BCC recipients. Provider draft editing/sending in place is not implemented. Ambiguous draft saves require operator reconciliation, not another APPEND.
+- Archive means move to a discovered folder selected by the operator. Restore returns to configured Inbox. Trash requires a selectable special-use Trash folder.
+- MOVE/COPY/TRASH/RESTORE require destination UID mapping, destination generation validation and exact UID readback. A failed confirmation after the write is not evidence that no change occurred; inspect provider state before repeating it.
+- `hasAttachment` search is unsupported. No permanent deletion/EXPUNGE endpoint is exposed.
+- See `docs/capabilities-and-limits.md` for install/reload and live-provider verification boundaries.
+
 ## Verification
 
 A task is complete only when the tool result provides evidence for the requested operation:

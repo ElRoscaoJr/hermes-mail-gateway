@@ -9,7 +9,7 @@ import { OutboxRepository } from "../outbox/repository.js";
 import { mailAccountsSchema, mailExecuteSchema, mailPrepareSchema, mailQuerySchema } from "../mcp/schemas.js";
 
 export type MailAccountsInput = z.infer<typeof mailAccountsSchema>;
-export type MailQueryInput = z.infer<typeof mailQuerySchema>;
+export type MailQueryInput = z.input<typeof mailQuerySchema>;
 export type MailPrepareInput = z.input<typeof mailPrepareSchema>;
 export type MailExecuteInput = z.input<typeof mailExecuteSchema>;
 
@@ -108,13 +108,32 @@ function sourceAttachments(source: MailMessage, maxBytes: number): ForwardedAtta
   });
 }
 function publicSummary(summary: MailSummary): MailSummary {
-  const { uidValidity: _uidValidity, ...publicValue } = summary;
-  return publicValue;
+  return {
+    reference: summary.reference, folder: summary.folder, uid: summary.uid,
+    from: summary.from, to: summary.to, cc: summary.cc, flags: summary.flags,
+    ...(summary.subject === undefined ? {} : { subject: summary.subject }),
+    ...(summary.messageId === undefined ? {} : { messageId: summary.messageId }),
+    ...(summary.date === undefined ? {} : { date: summary.date }),
+    ...(summary.replyTo === undefined ? {} : { replyTo: summary.replyTo }),
+    ...(summary.inReplyTo === undefined ? {} : { inReplyTo: summary.inReplyTo }),
+    ...(summary.references === undefined ? {} : { references: summary.references }),
+    ...(summary.forwarding === undefined ? {} : { forwarding: summary.forwarding }),
+    ...(summary.size === undefined ? {} : { size: summary.size }),
+  };
 }
+function publicMailMessage(message: MailMessage): unknown {
+  return {
+    ...publicSummary(message),
+    ...(message.text === undefined ? {} : { text: message.text }),
+    ...(message.html === undefined ? {} : { html: message.html }),
+    attachments: message.attachments.map(({ filename, contentType, size, disposition, contentId }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }), ...(disposition === undefined ? {} : { disposition }), ...(contentId === undefined ? {} : { contentId }) })),
+  };
+}
+function publicThreadMessage(message: MailMessage): unknown { return publicMailMessage(message); }
 
 /** Composes the repositories, account-scoped adapters, and credential-free domain use cases. */
 export class MailGatewayService implements MailApplicationService {
-  constructor(private readonly accounts: AccountRepository, private readonly outbox: OutboxRepository, private readonly adapters: MailAdapterRegistry, private readonly maxRecipients = 100, private readonly maxAttachmentBytes = 25_000_000, private readonly maxQueryLimit = 100) {}
+  constructor(private readonly accounts: AccountRepository, private readonly outbox: OutboxRepository, private readonly adapters: MailAdapterRegistry, private readonly maxRecipients = 100, private readonly maxAttachmentBytes = 25_000_000, private readonly maxQueryLimit = 100, private readonly maxThreadBytes = 10_000_000) {}
 
   async mailAccounts(input: MailAccountsInput): Promise<{ readonly accounts: readonly SafeAccountProjection[] }> {
     const configured = this.accounts.list();
@@ -137,9 +156,9 @@ export class MailGatewayService implements MailApplicationService {
 
   async mailQuery(input: MailQueryInput, context: ApplicationCallContext): Promise<unknown> {
     const account = accountOrThrow(this.accounts, input.accountId);
-    const limit = Math.min(input.limit, Math.min(100, Math.max(1, this.maxQueryLimit)));
+    const limit = Math.min(input.limit ?? 20, Math.min(100, Math.max(1, this.maxQueryLimit)));
     const folder = input.folder ?? account.inboxFolder;
-    const paged = input.operation === "list" || input.operation === "search";
+    const paged = input.operation === "list" || (input.operation === "search" && (input.searchScope ?? "currentFolder") === "currentFolder");
     const cursor = input.cursor === undefined || !paged ? undefined : decodeCursor(input.cursor, account.accountId, folder, input.operation as "list" | "search");
     let value: unknown;
     const { imap } = adapterOrThrow(this.adapters, account.accountId);
@@ -155,20 +174,28 @@ export class MailGatewayService implements MailApplicationService {
       value = { messages: page.map(publicSummary), hasMore, ...(hasMore && page.length > 0 ? { nextCursor: encodeCursor({ accountId: account.accountId, folder, operation: "list", lastUid: page[page.length - 1]!.uid, uidValidity: page[page.length - 1]!.uidValidity! }) } : {}) };
     } else if (input.operation === "search") {
       if (!input.query && input.search === undefined) throw new SafeError("INVALID_INPUT", "A search query or structured search filter is required.");
-      if (input.search !== undefined) {
-        if (!imap.searchWithFilters) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support structured search filters.");
-      } else if (!imap.search) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support search.");
-      const messages = input.search !== undefined
-        ? await safeProviderCall(() => imap.searchWithFilters!(folder, input.query, input.search!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity))
-        : await safeProviderCall(() => imap.search!(folder, input.query!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity));
-      const hasMore = messages.length > limit;
-      const page = messages.slice(0, limit);
-      if (hasMore && page.length > 0 && page[page.length - 1]!.uidValidity === undefined) throw new SafeError("PROVIDER_UNAVAILABLE", "The mail provider returned no mailbox generation.");
-      value = { messages: page.map(publicSummary), hasMore, ...(hasMore && page.length > 0 ? { nextCursor: encodeCursor({ accountId: account.accountId, folder, operation: "search", lastUid: page[page.length - 1]!.uid, uidValidity: page[page.length - 1]!.uidValidity! }) } : {}) };
+      if ((input.searchScope ?? "currentFolder") === "allFolders") {
+        if (!imap.searchAllFolders) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support all-folder search.");
+        const page = await safeProviderCall(() => imap.searchAllFolders!(input.query, input.search, limit, input.cursor));
+        if (page.messages.length > limit || (page.truncated && !page.nextCursor)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an inconsistent search page.");
+        value = { messages: page.messages.slice(0, limit).map(publicSummary), truncated: page.truncated || page.messages.length > limit, foldersSearched: page.foldersSearched, ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
+      } else {
+        if (input.search !== undefined) {
+          if (!imap.searchWithFilters) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support structured search filters.");
+        } else if (!imap.search) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support search.");
+        const messages = input.search !== undefined
+          ? await safeProviderCall(() => imap.searchWithFilters!(folder, input.query, input.search!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity))
+          : await safeProviderCall(() => imap.search!(folder, input.query!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity));
+        const hasMore = messages.length > limit;
+        const page = messages.slice(0, limit);
+        if (hasMore && page.length > 0 && page[page.length - 1]!.uidValidity === undefined) throw new SafeError("PROVIDER_UNAVAILABLE", "The mail provider returned no mailbox generation.");
+        value = { messages: page.map(publicSummary), hasMore, ...(hasMore && page.length > 0 ? { nextCursor: encodeCursor({ accountId: account.accountId, folder, operation: "search", lastUid: page[page.length - 1]!.uid, uidValidity: page[page.length - 1]!.uidValidity! }) } : {}) };
+      }
     } else if (input.operation === "read") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
       if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading.");
-      value = { message: await safeProviderCall(() => imap.read!(input.messageReference!)) as MailMessage };
+      const message = await safeProviderCall(() => imap.read!(input.messageReference!)) as MailMessage;
+      value = { message: publicMailMessage(message) };
     } else if (input.operation === "attachments") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
       if (input.attachmentIndex !== undefined) {
@@ -176,14 +203,40 @@ export class MailGatewayService implements MailApplicationService {
         const attachment = await safeProviderCall(() => imap.downloadAttachment!(input.messageReference!, input.attachmentIndex!));
         value = { attachment: { filename: attachment.filename, contentType: attachment.contentType, size: attachment.size, sha256: attachment.sha256, contentBase64: attachment.content.toString("base64") } };
       } else {
-        if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading.");
-        const message = await safeProviderCall(() => imap.read!(input.messageReference!));
-        value = { attachments: message.attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
+        if (imap.listAttachments) {
+          const attachments = await safeProviderCall(() => imap.listAttachments!(input.messageReference!));
+          value = { attachments: attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
+        } else {
+          if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support attachment metadata.");
+          const message = await safeProviderCall(() => imap.read!(input.messageReference!));
+          value = { attachments: message.attachments.slice(0, 32).map(({ filename, contentType, size }) => ({ ...(filename === undefined ? {} : { filename }), ...(contentType === undefined ? {} : { contentType }), ...(size === undefined ? {} : { size }) })) };
+        }
       }
     } else if (input.operation === "thread") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
-      if (!imap.thread) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support thread lookup.");
-      value = { messages: (await safeProviderCall(() => imap.thread!(folder, input.messageReference!, limit))).map(publicSummary) };
+      if (!imap.thread) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support bounded thread lookup.");
+      const scope = input.threadScope ?? "allFolders";
+      const includeBodies = input.includeBodies ?? false;
+      const threadLimit = includeBodies ? Math.min(limit, 20) : limit;
+      const messages = await safeProviderCall(() => imap.thread!(folder, input.messageReference!, threadLimit, scope));
+      if (messages.length > threadLimit) throw new SafeError("THREAD_TOO_LARGE", "The provider returned more messages than the requested bounded thread limit.");
+      if (!messages.some((message) => message.reference === input.messageReference)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return a complete thread containing its anchor message.");
+      if (!includeBodies) value = { scope, complete: true, messages: messages.map(publicSummary) };
+      else {
+        if (!imap.read) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support reading thread messages.");
+        if (messages.length > 20) throw new SafeError("THREAD_TOO_LARGE", "The thread body limit is 20 messages.");
+        let totalBytes = 0;
+        const expanded: unknown[] = [];
+        for (const summary of messages) {
+          if (!Number.isSafeInteger(summary.size) || summary.size! < 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return verifiable message sizes for this thread.");
+          totalBytes += summary.size!;
+          if (totalBytes > this.maxThreadBytes) throw new SafeError("THREAD_TOO_LARGE", "The combined thread bodies exceed the configured read bound.");
+          const message = await safeProviderCall(() => imap.read!(summary.reference));
+          if (message.size !== summary.size) throw new SafeError("PROVIDER_UNAVAILABLE", "A thread message changed while it was being read; retry the query.");
+          expanded.push(publicThreadMessage(message));
+        }
+        value = { scope, complete: true, messages: expanded };
+      }
     } else {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A Message-ID reference is required.");
       value = { messageIdHeader: input.messageReference, verified: await safeProviderCall(() => imap.verifySent(input.messageReference!)) };
@@ -193,10 +246,11 @@ export class MailGatewayService implements MailApplicationService {
   }
 
   async mailPrepare(input: MailPrepareInput, context: ApplicationCallContext): Promise<unknown> {
+    const recipients = input.recipients ?? [];
     const cc = input.cc ?? [];
     const bcc = input.bcc ?? [];
     const attachments = input.attachments ?? [];
-    const recipientCount = input.recipients.length + cc.length + bcc.length;
+    const recipientCount = recipients.length + cc.length + bcc.length;
     if (recipientCount > this.maxRecipients) throw new SafeError("INVALID_INPUT", "Too many recipients for the configured account policy.");
     const attachmentBytes = attachments.reduce((total, attachment) => total + attachment.size, 0);
     if (attachmentBytes > this.maxAttachmentBytes) throw new SafeError("INVALID_INPUT", "Attachments exceed the configured message size policy.");
@@ -226,7 +280,7 @@ export class MailGatewayService implements MailApplicationService {
       accountId: input.accountId,
       idempotencyKey: input.idempotencyKey,
       intent: input.intent ?? "send",
-      recipients: input.recipients,
+      recipients,
       cc,
       bcc,
       ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
