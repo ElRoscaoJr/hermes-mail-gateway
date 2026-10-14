@@ -89,7 +89,7 @@ Initial local slices deferred real-provider, mailbox, real-keychain, and systemd
 
 ## Slice 8 — configuration, health, and cursor hardening
 
-- [x] `sentPolicy` accepts only `provider_managed`; `gateway_append` is rejected safely and no APPEND path was added.
+- [x] The original slice accepted only `provider_managed`; opt-in `gateway_append` for generic IMAP/SMTP was added later under D-014, with exact pre/post-APPEND verification and no retry of ambiguous outcomes.
 - [x] `mail_accounts` health is optional, contacts no provider when disabled, performs no-send IMAP connectivity and SMTP `verify()` when enabled, and maps failures to generic `ok`/`failed` projections.
 - [x] List/search pagination is bounded, uses opaque account/folder/operation/last-UID cursors, applies server-side IMAP UID criteria, rejects invalid or cross-scope cursors, and preserves strict limits.
 - [x] No provider, credential, mailbox, or send is used by the new tests.

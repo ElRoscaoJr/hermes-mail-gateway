@@ -17,7 +17,7 @@ This slice requires no provider send. If a mailbox is recreated or its IMAP `UID
 2. Copy `config.example.json` to an external operator directory. Replace only the synthetic provider endpoints, sender addresses, folders, keychain references, and paths with values belonging to the operator. Keep the file outside this repository and do not commit it.
 3. Set `databasePath` to a newly created disposable database path. Do not point it at a production database or an existing gateway database.
 4. Set `attachmentRoots` and both accounts' `allowedAttachmentRoots` to a disposable directory containing no confidential files. Create one harmless, non-sensitive text fixture there and record its byte size and SHA-256 locally.
-5. Ensure the selected account's `allowedSender` is the operator's self-test mailbox and that its `sentFolder` is the provider's actual Sent folder. Use `sentPolicy: "provider_managed"`; IMAP APPEND is not implemented.
+5. Ensure the selected account's `allowedSender` is the operator's self-test mailbox and that its `sentFolder` is the provider's actual Sent folder. Use `sentPolicy: "provider_managed"` when the provider saves its own Sent copy; only generic IMAP/SMTP accounts independently confirmed not to do so may use `"gateway_append"`. In the latter case, APPEND occurs only after a confirmed SMTP acknowledgment and an exact pre-append Sent lookup miss.
 6. Create the keychain entries referenced by the external configuration. Store the provider username and password/app-password in the host keychain only. For a new entry, run the repository helper from an interactive terminal, supplying only the non-secret service and account values as arguments; it prompts for the password without echoing it:
 
    ```sh

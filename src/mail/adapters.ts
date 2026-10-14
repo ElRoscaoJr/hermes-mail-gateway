@@ -7,6 +7,7 @@ import type { CredentialResolver } from "./credentials.js";
 
 export interface ImapAdapter {
   verifySent(messageIdHeader: string): Promise<boolean>;
+  appendSent?(rawMime: Buffer, context: DraftAppendContext): Promise<void>;
   appendDraft?(rawMime: Buffer, folder: string, context: DraftAppendContext): Promise<DraftAppendResult>;
   listFolders?(): Promise<readonly MailFolder[]>;
   checkConnectivity?(): Promise<void>;
@@ -83,7 +84,7 @@ export class NodemailerSmtpAdapter implements SmtpAdapter {
     }
     if (!credential) return { outcome: "PRE_SUBMISSION_FAILURE", evidence: "credential_unavailable" };
     try {
-      const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, auth: { user: credential.username, pass: credential.password } };
+      const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, requireTLS: !this.options.secure, auth: { user: credential.username, pass: credential.password } };
       const transport = this.transport ?? (this.options.transportFactory ? this.options.transportFactory(transportOptions) : nodemailer.createTransport(transportOptions));
       const info = await transport.sendMail({ raw: Buffer.from(mime), envelope: { from: envelope.from, to: [...envelope.to], cc: [...envelope.cc], bcc: [...envelope.bcc] } });
       if (Array.isArray(info.rejected) && info.rejected.length > 0) return { outcome: "REJECTED", evidence: "provider_rejected" };
@@ -99,7 +100,7 @@ export class NodemailerSmtpAdapter implements SmtpAdapter {
   async verify(): Promise<void> {
     const credential = await this.options.credentials.get(this.options.credentialRef);
     if (!credential) throw new SafeError("PROVIDER_UNAVAILABLE", "The SMTP provider is unavailable.");
-    const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, auth: { user: credential.username, pass: credential.password } };
+    const transportOptions = { host: this.options.host, port: this.options.port, secure: this.options.secure, requireTLS: !this.options.secure, auth: { user: credential.username, pass: credential.password } };
     const transport = this.transport ?? (this.options.transportFactory ? this.options.transportFactory(transportOptions) : nodemailer.createTransport(transportOptions));
     const verifiedTransport = transport as typeof transport & { verify?: () => Promise<unknown> };
     if (!verifiedTransport.verify) throw new SafeError("PROVIDER_UNAVAILABLE", "The SMTP provider is unavailable.");
@@ -179,11 +180,47 @@ export class ImapFlowMailAdapter implements ImapAdapter {
 
   private async withClient<T>(operation: (client: ImapFlowClient) => Promise<T>): Promise<T> {
     let client: ImapFlowClient | undefined;
-    try { const credential = await this.options.credentials.get(this.options.account.credentialRef); if (!credential) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider is unavailable."); client = this.factory({ ...this.endpoint, auth: { user: credential.username, pass: credential.password }, logger: false }); await client.connect(); return await operation(client); } catch (error) { return mapError(error); } finally { if (client) { try { await client.logout(); } catch { /* close below */ } client.close(); } }
+    try { const credential = await this.options.credentials.get(this.options.account.credentialRef); if (!credential) throw new SafeError("PROVIDER_UNAVAILABLE", "The IMAP provider is unavailable."); client = this.factory({ ...this.endpoint, doSTARTTLS: !this.endpoint.secure, auth: { user: credential.username, pass: credential.password }, logger: false }); await client.connect(); return await operation(client); } catch (error) { return mapError(error); } finally { if (client) { try { await client.logout(); } catch { /* close below */ } client.close(); } }
+  }
+
+  private async exactSentExists(client: ImapFlowClient, messageIdHeader: string): Promise<boolean> {
+    const found = await client.search({ header: { "Message-ID": messageIdHeader } }, { uid: true });
+    if (!Array.isArray(found)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not complete the Sent lookup.");
+    for (const uid of found.slice(0, this.maxResults)) {
+      if (!Number.isSafeInteger(uid) || uid < 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an invalid Sent UID.");
+      const message = await client.fetchOne(uid, { uid: true, envelope: true }, { uid: true });
+      if (!message || message.uid !== uid || !message.envelope) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the Sent candidate.");
+      if (message.envelope.messageId === messageIdHeader) return true;
+    }
+    if (found.length > this.maxResults) throw new SafeError("PROVIDER_UNAVAILABLE", "The Sent lookup exceeded the safe verification bound.");
+    return false;
   }
 
   async listFolders(): Promise<readonly MailFolder[]> { return this.withClient(async (client) => (await client.list()).filter((folder) => !folder.flags?.has("\\Noselect") && !folder.flags?.has("\\NOSELECT")).map((folder) => ({ path: folder.path, name: folder.name, delimiter: folder.delimiter, ...(folder.specialUse === undefined ? {} : { specialUse: folder.specialUse }) }))); }
 
+  async appendSent(rawMime: Buffer, context: DraftAppendContext): Promise<void> {
+    if (context.accountId !== this.options.account.accountId || !/^<[^<>\r\n]+>$/.test(context.messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Sent append context is invalid for this account.");
+    return this.withClient(async (client) => {
+      if (!client.append) throw new SafeError("UNSUPPORTED_OPERATION", "The configured IMAP provider does not support Sent APPEND.");
+      const folder = this.options.account.sentFolder;
+      const lock = await client.getMailboxLock(folder);
+      try {
+        if (await this.exactSentExists(client, context.messageIdHeader)) return;
+        const appended = await client.append(folder, rawMime, ["\\Seen"]);
+        if (!appended) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the Sent append.");
+        let uid = typeof appended.uid === "number" && Number.isSafeInteger(appended.uid) && appended.uid > 0 ? appended.uid : undefined;
+        if (uid === undefined) {
+          const found = await client.search({ header: { "Message-ID": context.messageIdHeader } }, { uid: true });
+          if (!Array.isArray(found) || found.length > this.maxResults || found.some((value) => !Number.isSafeInteger(value) || value < 1)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not complete the Sent UID lookup.");
+          const candidates = found.slice(0, 2);
+          if (candidates.length !== 1) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not return an unambiguous Sent UID.");
+          uid = candidates[0]!;
+        }
+        const confirmed = await client.fetchOne(uid, { uid: true, envelope: true, flags: true }, { uid: true });
+        if (!confirmed || confirmed.uid !== uid || confirmed.envelope?.messageId !== context.messageIdHeader || ![...(confirmed.flags ?? [])].some((flag) => flag.toLowerCase() === "\\seen")) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider did not confirm the exact Sent Message-ID and flag.");
+      } finally { lock.release(); }
+    });
+  }
   async appendDraft(rawMime: Buffer, folder: string, context: DraftAppendContext): Promise<DraftAppendResult> {
     if (context.accountId !== this.options.account.accountId || !/^<[^<>\r\n]+>$/.test(context.messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Draft append context is invalid for this account.");
     return this.withClient(async (client) => {
@@ -343,7 +380,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
     });
   }
 
-  async verifySent(messageIdHeader: string): Promise<boolean> { if (!/^<[^<>\r\n]+>$/.test(messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Message-ID header is invalid."); return this.withClient(async (client) => { const lock = await client.getMailboxLock(this.options.account.sentFolder); try { const found = await client.search({ header: { "Message-ID": messageIdHeader } }, { uid: true }); for (const uid of (Array.isArray(found) ? found : []).slice(0, this.maxResults)) { const message = await client.fetchOne(uid, { uid: true, envelope: true }, { uid: true }); if (message && message.envelope?.messageId === messageIdHeader) return true; } return false; } finally { lock.release(); } }); }
+  async verifySent(messageIdHeader: string): Promise<boolean> { if (!/^<[^<>\r\n]+>$/.test(messageIdHeader)) throw new SafeError("REFERENCE_INVALID", "Message-ID header is invalid."); return this.withClient(async (client) => { const lock = await client.getMailboxLock(this.options.account.sentFolder); try { return await this.exactSentExists(client, messageIdHeader); } finally { lock.release(); } }); }
 
   private summary(folder: string, message: FetchMessageObject, uidValidity: number): MailSummary { const envelope = message.envelope; return { reference: encodeReference(this.options.account.accountId, folder, message.uid, uidValidity), folder, uid: message.uid, uidValidity, ...(envelope?.subject === undefined ? {} : { subject: envelope.subject }), ...(envelope?.messageId === undefined ? {} : { messageId: envelope.messageId }), ...(envelope?.date === undefined ? {} : { date: new Date(envelope.date).toISOString() }), from: addresses(envelope?.from), to: addresses(envelope?.to), cc: addresses(envelope?.cc), ...(envelope?.replyTo === undefined ? {} : { replyTo: addresses(envelope.replyTo) }), ...(envelope?.inReplyTo === undefined ? {} : { inReplyTo: safeHeader(envelope.inReplyTo) }), ...(message.size === undefined ? {} : { size: message.size }), flags: [...(message.flags ?? [])] }; }
 }

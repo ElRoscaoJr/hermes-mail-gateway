@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import nodemailer from "nodemailer";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { join } from "node:path";
 import { buildMime } from "../../src/mail/mime.js";
 import { ImapFlowMailAdapter, NodemailerSmtpAdapter, type ImapFlowClient } from "../../src/mail/adapters.js";
@@ -104,8 +106,17 @@ test("SMTP adapter maps cross-keychain credentials to Nodemailer auth options", 
   const transport = { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }) };
   const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 465, secure: true, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transportFactory: (value) => { options = value; return transport; } });
   assert.deepEqual((await smtp.submit("<fixed@id>", Buffer.from("body"), envelope)).outcome, "ACKNOWLEDGED");
-  assert.deepEqual(options, { host: "smtp.example.test", port: 465, secure: true, auth: { user: "user", pass: "secret" } });
+  assert.deepEqual(options, { host: "smtp.example.test", port: 465, secure: true, requireTLS: false, auth: { user: "user", pass: "secret" } });
   assert.doesNotMatch(JSON.stringify(options), /username|password/);
+});
+
+test("SMTP 587 requires STARTTLS for submission and no-send verification", async () => {
+  const seen: unknown[] = [];
+  const smtp = new NodemailerSmtpAdapter({ host: "smtp.example.test", port: 587, secure: false, credentialRef: "keychain:smtp/account", credentials: { get: async () => ({ username: "user", password: "secret" }) }, transportFactory: (options) => { seen.push(options); return { sendMail: async () => ({ message: Buffer.from("accepted"), rejected: [] }), verify: async () => undefined }; } });
+  await smtp.verify();
+  assert.equal((await smtp.submit("<fixed@id>", Buffer.from("body"), envelope)).outcome, "ACKNOWLEDGED");
+  assert.equal(seen.length, 2);
+  for (const options of seen) assert.deepEqual(options, { host: "smtp.example.test", port: 587, secure: false, requireTLS: true, auth: { user: "user", pass: "secret" } });
 });
 
 test("local stream transport acknowledges raw submission with the explicit envelope", async () => {
@@ -138,6 +149,50 @@ function imapFake(messages: Record<string, { uid: number; source?: Buffer; envel
   const state = { options: undefined as unknown, locks: [] as string[], searches: [] as SearchObject[], flags: new Set<string>() };
   return { ...state, mailbox: { uidValidity: 1n }, connect: async () => undefined, logout: async () => undefined, close: () => undefined, list: async () => [{ path: "INBOX-custom", pathAsListed: "INBOX-custom", name: "INBOX-custom", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async (path) => { state.locks.push(path); return { release: () => undefined }; }, search: async (query) => { state.searches.push(query); return typeof searched === "function" ? searched(query) : searched; }, fetch: async function* (range) { for (const uid of range as number[]) { const message = messages[String(uid)]; if (message) yield { seq: uid, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set(state.flags) }; } }, fetchOne: async (uid) => { const message = messages[String(uid)]; return message ? { seq: uid as number, uid: message.uid, source: message.source, envelope: message.envelope, flags: new Set(state.flags) } : false; } };
 }
+
+test("IMAP non-implicit TLS endpoints require STARTTLS before authenticating", async () => {
+  const fake = imapFake({});
+  let options: unknown;
+  const account = { ...imapAccount, imapEndpoint: "imap://imap.example.test:143", sentPolicy: "gateway_append" as const };
+  const adapter = new ImapFlowMailAdapter({ account, credentials: { get: async () => ({ username: "user", password: "synthetic" }) }, clientFactory: (value) => { options = value; return fake; } });
+  await adapter.checkConnectivity();
+  assert.deepEqual({ secure: (options as { secure: boolean }).secure, doSTARTTLS: (options as { doSTARTTLS?: boolean }).doSTARTTLS }, { secure: false, doSTARTTLS: true });
+});
+
+test("IMAP refuses authentication when a synthetic server lacks STARTTLS", async () => {
+  const commands: string[] = [];
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.setTimeout(5_000, () => socket.destroy());
+    socket.write("* OK synthetic IMAP ready\r\n");
+    let buffer = "";
+    socket.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      while (buffer.includes("\r\n")) {
+        const index = buffer.indexOf("\r\n");
+        const line = buffer.slice(0, index); buffer = buffer.slice(index + 2);
+        commands.push(line);
+        const tag = line.split(" ")[0];
+        if (/\bCAPABILITY\b/i.test(line)) socket.write(`* CAPABILITY IMAP4rev1\r\n${tag} OK completed\r\n`);
+        else socket.write(`${tag} NO synthetic server rejects command\r\n`);
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (server.address() as AddressInfo).port;
+    const account = { ...imapAccount, imapEndpoint: `imap://127.0.0.1:${port}`, sentPolicy: "gateway_append" as const };
+    const adapter = new ImapFlowMailAdapter({ account, credentials: { get: async () => ({ username: "synthetic", password: "synthetic" }) } });
+    await assert.rejects(adapter.checkConnectivity(), { code: "PROVIDER_UNAVAILABLE" });
+    assert.ok(commands.some((line) => /\bCAPABILITY\b/i.test(line)));
+    assert.equal(commands.some((line) => /\b(LOGIN|AUTHENTICATE)\b/i.test(line)), false);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
 
 test("IMAP adapter uses explicit folders, credentials, UID-safe references, and bounded reads", async () => {
   const source = Buffer.from("Message-ID: <read@example.test>\r\nSubject: Read me\r\nCc: visible@example.test\r\nReply-To: replies@example.test\r\nIn-Reply-To: <parent@example.test>\r\nReferences: <root@example.test> <parent@example.test>\r\nX-Hermes-Forwarded-Message-Reference: source-ref\r\nX-Hermes-Forwarded-Message-ID: <source@example.test>\r\nX-Hermes-Forwarded-Subject: Original subject\r\nX-Secret-Arbitrary: must-not-escape\r\nContent-Type: text/plain\r\n\r\nbounded body");
@@ -190,6 +245,90 @@ test("IMAP folder discovery excludes non-selectable namespaces", async () => {
   ];
   const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
   assert.deepEqual(await adapter.listFolders(), [{ path: "[Gmail]/Spam", name: "Spam", delimiter: "/", specialUse: "\\Junk" }]);
+});
+
+test("IMAP Sent APPEND uses configured folder, Seen flag, and verifies the exact Message-ID", async () => {
+  const header = "<sent-copy@example.test>";
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: header } } });
+  fake.flags.add("\\Seen");
+  let appended = false;
+  fake.search = async (query) => { fake.searches.push(query); return appended ? [7] : []; };
+  fake.append = async (path, content, flags) => {
+    assert.equal(path, "Archive/Sent-custom");
+    assert.equal(Buffer.from(content).toString(), "persisted raw MIME");
+    assert.deepEqual(flags, ["\\Seen"]);
+    appended = true;
+    return { destination: "Archive/Sent-custom", uid: 7, uidValidity: 1n };
+  };
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.appendSent(Buffer.from("persisted raw MIME"), { accountId: "acct", messageIdHeader: header });
+  assert.equal(appended, true);
+  assert.deepEqual(fake.locks, ["Archive/Sent-custom"]);
+  assert.deepEqual(fake.searches, [{ header: { "Message-ID": header } }]);
+});
+
+test("IMAP Sent APPEND refuses a cross-account context before opening a connection", async () => {
+  const fake = imapFake({});
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "other", messageIdHeader: "<id@example.test>" }), { code: "REFERENCE_INVALID" });
+  assert.deepEqual(fake.locks, []);
+});
+
+test("IMAP Sent APPEND does not duplicate an existing exact Message-ID", async () => {
+  const header = "<already-sent@example.test>";
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: header } } }, [7]);
+  let appends = 0;
+  fake.append = async () => { appends++; return { destination: "Archive/Sent-custom", uid: 8 }; };
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: header });
+  assert.equal(appends, 0);
+});
+
+test("IMAP Sent APPEND verifies an unambiguous provider UID when UIDPLUS is absent", async () => {
+  const header = "<uidless-sent@example.test>";
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: header } } });
+  fake.flags.add("\\Seen");
+  let appended = false;
+  fake.search = async (query) => { fake.searches.push(query); return appended ? [7] : []; };
+  fake.append = async () => { appended = true; return { destination: "Archive/Sent-custom" }; };
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: header });
+  assert.equal(appended, true);
+  assert.equal(fake.searches.length, 2);
+});
+
+test("IMAP Sent APPEND never claims success for a wrong Message-ID", async () => {
+  const fake = imapFake({ "7": { uid: 7, envelope: { messageId: "<wrong@example.test>" } } }, []);
+  fake.flags.add("\\Seen");
+  fake.append = async () => ({ destination: "Archive/Sent-custom", uid: 7 });
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "secret" }) }, clientFactory: () => fake });
+  await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: "<wanted@example.test>" }), { code: "PROVIDER_UNAVAILABLE" });
+});
+
+test("IMAP failed or undefined SEARCH cannot authorize a Sent APPEND", async () => {
+  const searchResults: Array<false | undefined> = [false, undefined];
+  for (const searchResult of searchResults) {
+    const fake = imapFake({});
+    let appends = 0;
+    fake.search = async () => searchResult;
+    fake.append = async () => { appends++; return { destination: "Archive/Sent-custom", uid: 7 }; };
+    const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "synthetic" }) }, clientFactory: () => fake });
+    await assert.rejects(adapter.verifySent("<wanted@example.test>"), { code: "PROVIDER_UNAVAILABLE" });
+    await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: "<wanted@example.test>" }), { code: "PROVIDER_UNAVAILABLE" });
+    assert.equal(appends, 0);
+  }
+});
+
+test("IMAP partial HEADER matches beyond the bound cannot authorize a duplicate Sent APPEND", async () => {
+  const header = "<exact-match@example.test>";
+  const fake = imapFake({ "1": { uid: 1, envelope: { messageId: "<partial-a@example.test>" } }, "2": { uid: 2, envelope: { messageId: "<partial-b@example.test>" } }, "3": { uid: 3, envelope: { messageId: header } } }, [1, 2, 3]);
+  fake.flags.add("\\Seen");
+  let appends = 0;
+  fake.append = async () => { appends++; return { destination: "Archive/Sent-custom", uid: 3 }; };
+  const adapter = new ImapFlowMailAdapter({ account: imapAccount, credentials: { get: async () => ({ username: "user", password: "synthetic" }) }, clientFactory: () => fake, maxResults: 2 });
+  await assert.rejects(adapter.verifySent(header), { code: "PROVIDER_UNAVAILABLE" });
+  await assert.rejects(adapter.appendSent(Buffer.from("raw"), { accountId: "acct", messageIdHeader: header }), { code: "PROVIDER_UNAVAILABLE" });
+  assert.equal(appends, 0);
 });
 
 test("IMAP draft APPEND sets the Draft flag, verifies Message-ID, and returns an opaque UID reference", async () => {

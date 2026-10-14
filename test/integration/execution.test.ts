@@ -30,6 +30,72 @@ test("verification failure after SMTP acknowledgement is unverified and cannot b
   assert.equal(smtp.submissions.length, 1);
 });
 
+test("gateway-managed policy appends the persisted MIME after one SMTP acknowledgment", async () => {
+  const { repo } = fixture();
+  repo.prepare(input());
+  const raw = repo.getRawMime("message-a");
+  const smtp = new FakeSmtpAdapter();
+  const appends: Array<{ mime: Buffer; accountId: string; messageIdHeader: string }> = [];
+  let present = false;
+  const imap = { verifySent: async () => present, appendSent: async (mime: Buffer, context: { accountId: string; messageIdHeader: string }) => { appends.push({ mime, ...context }); present = true; } };
+  const result = await executeOnce(repo, smtp, imap, "message-a", "owner", "gateway_append");
+  assert.equal(result.state, "SENT_VERIFIED");
+  assert.equal(smtp.submissions.length, 1);
+  assert.deepEqual(appends, [{ mime: raw, accountId: "acct", messageIdHeader: result.messageIdHeader }]);
+  assert.equal((await executeOnce(repo, smtp, imap, "message-a", "owner", "gateway_append")).state, "SENT_VERIFIED");
+  assert.equal(smtp.submissions.length, 1);
+  assert.equal(appends.length, 1);
+});
+
+test("provider-managed policy never adds a second Sent copy", async () => {
+  const { repo } = fixture(); repo.prepare(input());
+  const smtp = new FakeSmtpAdapter();
+  let appends = 0;
+  const imap = { verifySent: async () => false, appendSent: async () => { appends++; } };
+  assert.equal((await executeOnce(repo, smtp, imap, "message-a", "owner", "provider_managed")).state, "SENT_UNVERIFIED");
+  assert.equal(appends, 0);
+  assert.equal(smtp.submissions.length, 1);
+});
+
+test("gateway-managed policy skips APPEND when Sent already contains the exact message", async () => {
+  const { repo } = fixture(); repo.prepare(input());
+  const smtp = new FakeSmtpAdapter();
+  let appends = 0;
+  const imap = { verifySent: async () => true, appendSent: async () => { appends++; } };
+  assert.equal((await executeOnce(repo, smtp, imap, "message-a", "owner", "gateway_append")).state, "SENT_VERIFIED");
+  assert.equal(appends, 0);
+  assert.equal(smtp.submissions.length, 1);
+});
+
+test("ambiguous Sent APPEND is verified by exact Message-ID, never resent", async () => {
+  const { repo } = fixture(); repo.prepare(input());
+  const smtp = new FakeSmtpAdapter();
+  let present = false; let appends = 0;
+  const imap = { verifySent: async () => present, appendSent: async () => { appends++; present = true; throw new Error("lost IMAP response"); } };
+  assert.equal((await executeOnce(repo, smtp, imap, "message-a", "owner", "gateway_append")).state, "SENT_VERIFIED");
+  assert.equal(smtp.submissions.length, 1);
+  assert.equal(appends, 1);
+});
+
+test("unconfirmed Sent APPEND stays non-retryable even after SMTP acknowledgment", async () => {
+  const { repo } = fixture(); repo.prepare(input());
+  const smtp = new FakeSmtpAdapter(); let appends = 0;
+  const imap = { verifySent: async () => false, appendSent: async () => { appends++; throw new Error("lost IMAP response"); } };
+  assert.equal((await executeOnce(repo, smtp, imap, "message-a", "owner", "gateway_append")).state, "SENT_UNVERIFIED");
+  assert.throws(() => repo.claim("message-a", "new-owner", 10_000), { code: "STATE_CONFLICT" });
+  assert.equal(smtp.submissions.length, 1);
+  assert.equal(appends, 1);
+});
+
+test("ambiguous SMTP never triggers a gateway-managed Sent APPEND", async () => {
+  const { repo } = fixture(); repo.prepare(input());
+  const smtp = new FakeSmtpAdapter("UNKNOWN"); let appends = 0;
+  const imap = { verifySent: async () => false, appendSent: async () => { appends++; } };
+  assert.equal((await executeOnce(repo, smtp, imap, "message-a", "owner", "gateway_append")).state, "OUTCOME_UNKNOWN");
+  assert.equal(appends, 0);
+  assert.equal(smtp.submissions.length, 1);
+});
+
 test("execution submits the stored MIME after the source attachment is deleted", async () => {
   const { dir, accounts, repo } = fixture();
   const attachment = `${dir}/source.txt`;

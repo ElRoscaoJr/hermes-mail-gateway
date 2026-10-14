@@ -40,6 +40,22 @@ function serviceFixture() {
 
 const context = { caller: "Hermes main" as const, correlationId: "corr-service" };
 
+test("service execution routes the configured gateway-managed Sent policy", async () => {
+  const { accounts, repo } = fixture();
+  const original = accounts.get("acct")!;
+  accounts.upsert({ ...original, sentPolicy: "gateway_append" });
+  let copied = false;
+  let appendCount = 0;
+  const imap: ImapAdapter = { verifySent: async () => copied, appendSent: async () => { appendCount++; copied = true; } };
+  const smtp = new FakeSmtpAdapter();
+  const service = new MailGatewayService(accounts, repo, new Map([["acct", { imap, smtp }]]));
+  const prepared = await service.mailPrepare({ accountId: "acct", idempotencyKey: "managed-copy-123", recipients: ["recipient@example.test"], subject: "Synthetic", textBody: "body" }, context) as { messageId: string };
+  const sent = await service.mailExecute({ accountId: "acct", messageId: prepared.messageId, verifyOnly: false }, context) as { state: string };
+  assert.equal(sent.state, "SENT_VERIFIED");
+  assert.equal(smtp.submissions.length, 1);
+  assert.equal(appendCount, 1);
+});
+
 test("mailAccounts returns safe projections and provider health", async () => {
   const { service } = serviceFixture();
   const result = await service.mailAccounts({ includeHealth: true });

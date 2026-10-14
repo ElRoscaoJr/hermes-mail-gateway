@@ -20,10 +20,12 @@ test("attachment download mode is bounded and rejects misplaced indexes", () => 
   assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "attachments", messageReference: "ref", attachmentIndex: 32 }).success, false);
   assert.equal(mailQuerySchema.safeParse({ accountId: "a", operation: "read", messageReference: "ref", attachmentIndex: 0 }).success, false);
 });
-test("configuration rejects the unsupported gateway append policy", () => {
+test("gateway-managed Sent copies are allowed only for generic IMAP/SMTP", () => {
   const valid = { accountId: "acct", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: "imaps://imap.example.test", smtpEndpoint: "smtp://smtp.example.test", credentialRef: "keychain:imap/account", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX", sentFolder: "Sent" };
   assert.equal(accountConfigSchema.safeParse(valid).success, true);
-  assert.equal(accountConfigSchema.safeParse({ ...valid, sentPolicy: "gateway_append" }).success, false);
+  assert.equal(accountConfigSchema.safeParse({ ...valid, sentPolicy: "gateway_append" }).success, true);
+  assert.equal(accountConfigSchema.safeParse({ ...valid, providerKind: "gmail", sentPolicy: "gateway_append" }).success, false);
+  assert.equal(accountConfigSchema.safeParse({ ...valid, providerKind: "zoho", sentPolicy: "gateway_append" }).success, false);
 });
 test("configuration supplies bounded operational query and read defaults", () => {
   const result = serverConfigSchema.parse({ databasePath: "/tmp/mail.db", attachmentRoots: [], accounts: [], limits: { maxRecipients: 10, maxAttachmentBytes: 1_000_000 } });

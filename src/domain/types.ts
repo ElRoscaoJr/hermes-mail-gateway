@@ -2,7 +2,7 @@ export const OUTBOX_STATES = ["PREPARED", "SEND_ATTEMPTED", "SENT_UNVERIFIED", "
 export type OutboxState = typeof OUTBOX_STATES[number];
 export type DraftSaveStatus = "NOT_SAVED" | "APPEND_STARTED" | "SAVED";
 export type ProviderKind = "gmail" | "zoho" | "generic_imap_smtp";
-export type SentPolicy = "provider_managed";
+export type SentPolicy = "provider_managed" | "gateway_append";
 export interface AccountProjection { accountId: string; displayName: string; providerKind: ProviderKind; imapEndpoint: string; smtpEndpoint: string; credentialRef: string; smtpCredentialRef?: string | undefined; sentPolicy: SentPolicy; enabled: boolean; allowedSender: string; allowedAttachmentRoots: readonly string[]; inboxFolder: string; sentFolder: string; draftsFolder?: string | undefined; }
 export interface AttachmentManifest { path: string; size: number; sha256: string; contentType: string; }
 export interface ForwardingMetadata { originalMessageReference: string; originalMessageId?: string; originalSubject?: string; }
