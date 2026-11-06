@@ -268,7 +268,7 @@ export class ImapFlowMailAdapter implements ImapAdapter {
   private readonly maxResults: number;
   private readonly maxReadBytes: number;
   private readonly maxAttachmentDownloadBytes: number;
-  constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 101); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 1_000_000, 1), 10_000_000); this.maxAttachmentDownloadBytes = Math.min(Math.max(options.maxAttachmentDownloadBytes ?? 10_000_000, 1), 25_000_000); }
+  constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 101); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 4_000_000, 1), 10_000_000); this.maxAttachmentDownloadBytes = Math.min(Math.max(options.maxAttachmentDownloadBytes ?? 10_000_000, 1), 25_000_000); }
 
   private selectedUidValidity(client: ImapFlowClient): number {
     const raw = (client as ImapFlowClient & { mailbox?: { uidValidity?: bigint | number } }).mailbox?.uidValidity;

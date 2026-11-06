@@ -41,7 +41,7 @@ test("gateway-managed Sent copies are allowed only for generic IMAP/SMTP", () =>
 });
 test("configuration supplies bounded operational query and read defaults", () => {
   const result = serverConfigSchema.parse({ databasePath: "/tmp/mail.db", attachmentRoots: [], accounts: [], limits: { maxRecipients: 10, maxAttachmentBytes: 1_000_000 } });
-  assert.deepEqual(result.limits, { maxRecipients: 10, maxAttachmentBytes: 1_000_000, maxQueryResults: 50, maxReadBytes: 1_000_000, maxAttachmentDownloadBytes: 10_000_000 });
+  assert.deepEqual(result.limits, { maxRecipients: 10, maxAttachmentBytes: 1_000_000, maxQueryResults: 50, maxReadBytes: 4_000_000, maxAttachmentDownloadBytes: 10_000_000 });
   assert.equal(serverConfigSchema.safeParse({ databasePath: "/tmp/mail.db", attachmentRoots: [], accounts: [], limits: { maxRecipients: 10, maxAttachmentBytes: 1_000_000, maxQueryResults: 101, maxReadBytes: 10_000_001, maxAttachmentDownloadBytes: 25_000_001 } }).success, false);
 });
 test("draft preparation accepts no recipients while send preparation still requires one", () => {
