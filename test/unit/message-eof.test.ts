@@ -50,6 +50,15 @@ for (const [length, hint, bound] of [[4037, 13086, 1_000_000], [70000, 1, 100000
     assert.ok(f.requests.length <= Math.ceil(bound! / 65536) + 1);
   });
 }
+test("read accepts a complete message above the former 10 MB ceiling with verified EOF", async () => {
+  const raw = Buffer.concat([Buffer.from("Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=test.bin\r\n\r\n"), Buffer.alloc(10_000_001, 97)]);
+  const f = fixture(raw, 1, 10_100_000);
+  const message = await f.adapter.read(reference);
+  assert.equal(message.size, raw.length);
+  assert.deepEqual(f.requests.at(-1), { start: raw.length, maxLength: 1 });
+  assert.ok(f.requests.every((request) => request.maxLength <= 65_536));
+});
+
 test("read refuses a byte beyond the exact read bound despite underestimated metadata", async () => {
   const f = fixture(Buffer.alloc(65537, 97), 1, 65536); await assert.rejects(f.adapter.read(reference), { code: "MESSAGE_TOO_LARGE" }); assert.equal(f.requests.length, 2);
 });
