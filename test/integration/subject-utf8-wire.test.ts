@@ -69,7 +69,7 @@ test("accented subject matches a decoded envelope without UTF-8 SEARCH", { timeo
         commands.push(command);
         if (/^CAPABILITY\b/i.test(command)) socket.write(`* CAPABILITY IMAP4rev1\r\n${tag} OK capability\r\n`);
         else if (/^LOGIN\b/i.test(command)) socket.write(`${tag} OK login\r\n`);
-        else if (/^LIST\b/i.test(command)) socket.write(`* LIST () "/" "INBOX"\r\n${tag} OK list\r\n`);
+        else if (/^LIST\b/i.test(command)) socket.write(`* LIST () "/" "INBOX"\r\n* LIST () "/" "Archive"\r\n${tag} OK list\r\n`);
         else if (/^LSUB\b/i.test(command)) socket.write(`* LSUB () "/" "INBOX"\r\n${tag} OK lsub\r\n`);
         else if (/^SELECT\b/i.test(command)) socket.write(`* FLAGS (\\Seen)\r\n* 1 EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 1] valid\r\n* OK [UIDNEXT 2] next\r\n${tag} OK [READ-WRITE] select\r\n`);
         else if (/^UID SEARCH\b/i.test(command)) {
@@ -86,8 +86,9 @@ test("accented subject matches a decoded envelope without UTF-8 SEARCH", { timeo
   const account: AccountProjection = { accountId: "synthetic", displayName: "Synthetic", providerKind: "generic_imap_smtp", imapEndpoint: `imap://127.0.0.1:${port}`, smtpEndpoint: "smtp://smtp.example.test", credentialRef: "synthetic-only", sentPolicy: "provider_managed", enabled: true, allowedSender: "sender@example.test", allowedAttachmentRoots: [], inboxFolder: "INBOX", sentFolder: "Sent" };
   const adapter = new ImapFlowMailAdapter({ account, credentials: { get: async () => ({ username: "synthetic", password: "synthetic" }) }, clientFactory: (options) => new ImapFlow({ ...options, doSTARTTLS: false, socketTimeout: 5_000 }) });
   try {
-    const result = await adapter.searchWithFilters("INBOX", undefined, { subject: "reunión" }).catch((error: unknown) => { throw new Error(`Search failed; commands: ${JSON.stringify(commands)}`, { cause: error }); });
-    assert.deepEqual(result.map((message) => [message.uid, message.subject]), [[1, "reunión"]]);
+    const result = await adapter.searchAllFolders(undefined, { subject: "reunión" }).catch((error: unknown) => { throw new Error(`Search failed; commands: ${JSON.stringify(commands)}`, { cause: error }); });
+    assert.deepEqual(result.messages.map((message) => [message.uid, message.subject]), [[1, "reunión"]]);
+    assert.equal(result.foldersSearched, 2);
     assert.ok(commands.some((command) => /^UID SEARCH\b/i.test(command)), JSON.stringify(commands));
     assert.ok(commands.every((command) => !/^UID SEARCH.*(?:CHARSET|SUBJECT)/i.test(command)), JSON.stringify(commands));
   } finally {
