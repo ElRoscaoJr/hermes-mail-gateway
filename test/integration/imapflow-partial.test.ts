@@ -69,6 +69,8 @@ test("ImapFlow returns exact encoded MIME octets for bounded section offsets and
     assert.equal(sentinel.bodyParts?.get("2"), undefined);
 
     const download = await client.download(7, "2", { uid: true, maxBytes: 7 });
+    assert.ok(download.meta);
+    assert.ok(download.content);
     assert.equal(download.meta.expectedSize, 100);
     const chunks: Buffer[] = [];
     for await (const chunk of download.content) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));

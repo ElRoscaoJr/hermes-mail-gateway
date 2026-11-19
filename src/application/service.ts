@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { z } from "zod";
 import { SafeError, type SafeResult } from "../errors.js";
 import type { AccountProjection, ForwardedAttachment } from "../domain/types.js";
@@ -45,7 +46,7 @@ function safeAccount(account: AccountProjection): SafeAccountProjection {
   return { accountId: account.accountId, displayName: account.displayName, providerKind: account.providerKind, allowedSender: account.allowedSender, enabled: account.enabled };
 }
 
-type QueryCursor = { readonly accountId: string; readonly folder: string; readonly operation: "list" | "search"; readonly lastUid: number; readonly uidValidity: number };
+type QueryCursor = { readonly accountId: string; readonly folder: string; readonly operation: "list" | "search"; readonly lastUid: number; readonly uidValidity: number; readonly searchHash?: string; readonly uidNext?: number };
 function encodeCursor(cursor: QueryCursor): string { return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url"); }
 function decodeCursor(value: string, accountId: string, folder: string, operation: "list" | "search"): QueryCursor {
   try {
@@ -159,6 +160,9 @@ export class MailGatewayService implements MailApplicationService {
     const folder = input.folder ?? account.inboxFolder;
     const paged = input.operation === "list" || (input.operation === "search" && (input.searchScope ?? "currentFolder") === "currentFolder");
     const cursor = input.cursor === undefined || !paged ? undefined : decodeCursor(input.cursor, account.accountId, folder, input.operation as "list" | "search");
+    const searchHash = input.operation === "search" ? createHash("sha256").update(JSON.stringify([input.query ?? null, Object.entries(input.search ?? {}).sort(([a], [b]) => a.localeCompare(b))])).digest("hex") : undefined;
+    if (cursor && input.operation === "search" && ((cursor.searchHash !== undefined && cursor.searchHash !== searchHash) || (input.search?.subject && /[^\x00-\x7f]/.test(input.search.subject) && cursor.searchHash !== searchHash))) throw new SafeError("INVALID_INPUT", "The query cursor does not match this search.");
+    if (cursor && input.search?.subject && /[^\x00-\x7f]/.test(input.search.subject) && (!Number.isSafeInteger(cursor.uidNext) || cursor.uidNext! < 1 || cursor.uidNext! > 4294967296)) throw new SafeError("INVALID_INPUT", "The query cursor lacks a valid UID range.");
     let value: unknown;
     const { imap } = adapterOrThrow(this.adapters, account.accountId);
     if (input.operation === "folders") {
@@ -183,12 +187,12 @@ export class MailGatewayService implements MailApplicationService {
           if (!imap.searchWithFilters) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support structured search filters.");
         } else if (!imap.search) throw new SafeError("UNSUPPORTED_OPERATION", "The configured mailbox adapter does not support search.");
         const messages = input.search !== undefined
-          ? await safeProviderCall(() => imap.searchWithFilters!(folder, input.query, input.search!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity))
+          ? await safeProviderCall(() => imap.searchWithFilters!(folder, input.query, input.search!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity, cursor?.uidNext))
           : await safeProviderCall(() => imap.search!(folder, input.query!, Math.min(limit + 1, 101), cursor?.lastUid, cursor?.uidValidity));
         const hasMore = messages.length > limit;
         const page = messages.slice(0, limit);
         if (hasMore && page.length > 0 && page[page.length - 1]!.uidValidity === undefined) throw new SafeError("PROVIDER_UNAVAILABLE", "The mail provider returned no mailbox generation.");
-        value = { messages: page.map(publicSummary), hasMore, ...(hasMore && page.length > 0 ? { nextCursor: encodeCursor({ accountId: account.accountId, folder, operation: "search", lastUid: page[page.length - 1]!.uid, uidValidity: page[page.length - 1]!.uidValidity! }) } : {}) };
+        value = { messages: page.map(publicSummary), hasMore, ...(hasMore && page.length > 0 ? { nextCursor: encodeCursor({ accountId: account.accountId, folder, operation: "search", lastUid: page[page.length - 1]!.uid, uidValidity: page[page.length - 1]!.uidValidity!, searchHash: searchHash!, ...(page[page.length - 1]!.searchUidNext === undefined ? {} : { uidNext: page[page.length - 1]!.searchUidNext }) }) } : {}) };
       }
     } else if (input.operation === "read") {
       if (!input.messageReference) throw new SafeError("INVALID_INPUT", "A message reference is required.");
