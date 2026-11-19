@@ -131,6 +131,8 @@ export interface ImapFlowMailAdapterOptions {
   readonly maxResults?: number;
   readonly maxReadBytes?: number;
   readonly maxAttachmentDownloadBytes?: number;
+  /** Wall-clock bound for one all-folder Unicode subject scan; defaults to 60 seconds. */
+  readonly localSubjectScanDeadlineMs?: number;
 }
 
 function parseEndpoint(endpoint: string): { host: string; port: number; secure: boolean } {
@@ -224,14 +226,18 @@ function searchDateMs(value: string | undefined): number {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
 }
+/** UTF-16 code-unit order. Collation (localeCompare) can report distinct folder names as equal,
+ *  which would make the cursor filter drop every remaining folder and report a partial page as
+ *  complete, so ordering and cursor comparison must use the same total order. */
+function compareCodeUnits(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 function compareSearchSummary(left: MailSummary, right: MailSummary): number {
-  return searchDateMs(right.date) - searchDateMs(left.date) || left.folder.localeCompare(right.folder) || right.uid - left.uid;
+  return searchDateMs(right.date) - searchDateMs(left.date) || compareCodeUnits(left.folder, right.folder) || right.uid - left.uid;
 }
 function comesAfterSearchCursor(item: MailSummary, cursor: AllFolderSearchCursor): boolean {
   const itemDate = searchDateMs(item.date);
   const cursorDate = cursor.dateMs ?? Number.NEGATIVE_INFINITY;
   if (itemDate !== cursorDate) return cursorDate - itemDate > 0;
-  if (item.folder !== cursor.folder) return item.folder.localeCompare(cursor.folder) > 0;
+  if (item.folder !== cursor.folder) return compareCodeUnits(item.folder, cursor.folder) > 0;
   return item.uid < cursor.uid;
 }
 function safeForwarding(headers: Map<string, unknown> | undefined): MailForwardMetadata | undefined {
@@ -261,33 +267,109 @@ const IMAP_UID_SEARCH_WINDOW_BUDGET = 128;
 const IMAP_ALL_FOLDER_SEARCH_WINDOW_BUDGET = 512;
 const IMAP_THREAD_UID_WINDOW_SIZE = 65_536;
 
-// Aggregate accounting is conservative UTF-16 bytes plus 64 bytes per value/key;
-// it covers every fetched field, including flags and nested envelopes, before mapping.
-// Cycles or nesting beyond 32 levels fail closed. No serialization or large copy is made.
-const LOCAL_SUBJECT_METADATA_BUDGET = 8 * 1024 * 1024;
-function chargeLocalMetadata(value: unknown, budget: { remaining: number }, seen = new Set<object>(), depth = 0): void {
-  const charge = (bytes: number): void => {
-    budget.remaining -= bytes;
-    if (budget.remaining < 0) throw new SafeError("QUERY_TOO_LARGE", "The Unicode subject search exceeds the metadata budget; narrow the search.");
-  };
-  charge(64);
-  if (typeof value === "string") { charge(value.length * 2); return; }
+/**
+ * Metadata budget for one local Unicode subject scan, charged against the fields a summary
+ * actually retains (subject, Message-ID, date, From/To/Cc/Reply-To names and addresses, flags,
+ * size, In-Reply-To and bounded References) instead of the raw FETCH response. Fields the summary
+ * drops — internalDate, bodyStructure, headers, labels, seq, Sender, Bcc — are not charged, so the
+ * budget tracks the metadata the process keeps while matching rather than the wire shape.
+ *
+ * Each retained value is charged its exact UTF-16 size plus a small fixed per-value and per-key
+ * overhead; a retained string above LOCAL_SUBJECT_MAX_RETAINED_VALUE code units, nesting beyond
+ * LOCAL_SUBJECT_METADATA_MAX_DEPTH or a cyclic shape fails closed.
+ *
+ * 32 MiB covers an ordinary ~10,000-message mailbox with margin. The retained projection of a
+ * realistic message (60-character subject, Message-ID, one From, two To, one Cc, two flags,
+ * RFC822.SIZE) costs about 1.4 KB, so 10,000 messages cost about 14 MiB and the budget holds about
+ * 22,700 such messages: roughly 2.3x headroom for larger envelopes (many recipients, long subjects,
+ * Reply-To) and for per-value padding. 8 MiB was demonstrably too small: a real 4,441-message
+ * mailbox failed when the previous accounting charged every raw FETCH field, and the same mailbox
+ * stays well inside the budget once only retained fields are charged.
+ */
+const LOCAL_SUBJECT_METADATA_BUDGET = 32 * 1024 * 1024;
+/** Absolute candidate bound for an all-folder local subject scan. It does not depend on the
+ *  requested page size, so an ordinary whole mailbox (for example 4,441 messages in 22 folders, or
+ *  a ~10,000-message mailbox at the boundary) completes, while the metadata budget, the shared
+ *  UID-window budget and the scan deadline keep every request bounded. Exceeding it fails closed
+ *  instead of returning a partial page. */
+const LOCAL_SUBJECT_ALL_FOLDER_CANDIDATE_BUDGET = 10_000;
+const LOCAL_SUBJECT_ALL_FOLDER_DEADLINE_MS = 60_000;
+/** Charged once per candidate for the reference, folder path, UID and summary wrapper. */
+const LOCAL_SUBJECT_METADATA_BASE_BYTES = 256;
+/** Fixed overhead per retained value and per key; strings add their exact UTF-16 size. */
+const LOCAL_SUBJECT_METADATA_OVERHEAD_BYTES = 16;
+/** Retained header values (subject, Message-ID, In-Reply-To, addresses) are capped; a single
+ *  larger value fails closed instead of being silently truncated or allowed to consume the budget
+ *  alone. 65,536 code units is far above any RFC 5322-conforming header. */
+const LOCAL_SUBJECT_MAX_RETAINED_VALUE = 65_536;
+const LOCAL_SUBJECT_METADATA_MAX_DEPTH = 8;
+/** References is charged when a provider exposes it, bounded like the read path's header list. */
+const LOCAL_SUBJECT_MAX_RETAINED_REFERENCES = 100;
+
+interface LocalMetadataBudget { remaining: number }
+
+function chargeLocalBytes(budget: LocalMetadataBudget, bytes: number): void {
+  budget.remaining -= bytes;
+  if (budget.remaining < 0) throw new SafeError("QUERY_TOO_LARGE", "The Unicode subject search exceeds the metadata budget; add a since/before date filter or narrow the search.");
+}
+
+/** Charge only an already-projected, retained subset. Cycles, excessive depth and oversized
+ *  individual values fail closed. No serialization or large copy is made. */
+function chargeLocalMetadata(value: unknown, budget: LocalMetadataBudget, seen = new Set<object>(), depth = 0): void {
+  chargeLocalBytes(budget, LOCAL_SUBJECT_METADATA_OVERHEAD_BYTES);
+  if (typeof value === "string") {
+    if (value.length > LOCAL_SUBJECT_MAX_RETAINED_VALUE) throw new SafeError("QUERY_TOO_LARGE", "A retained message header in the Unicode subject search is too large; add a since/before date filter or search one folder at a time.");
+    chargeLocalBytes(budget, value.length * 2);
+    return;
+  }
   if (value === null || typeof value !== "object") return;
-  if (depth >= 32 || seen.has(value)) throw new SafeError("QUERY_TOO_LARGE", "The Unicode subject search metadata is too complex.");
+  if (depth >= LOCAL_SUBJECT_METADATA_MAX_DEPTH || seen.has(value)) throw new SafeError("QUERY_TOO_LARGE", "The Unicode subject search metadata is too complex.");
   seen.add(value);
   try {
-    if (Buffer.isBuffer(value)) { charge(value.length); return; }
-    // Reject huge sparse/dense synthetic arrays before property enumeration.
-    if (Array.isArray(value) && value.length > Math.floor(budget.remaining / 64)) throw new SafeError("QUERY_TOO_LARGE", "The Unicode subject search metadata is too complex.");
+    if (Array.isArray(value) && value.length > Math.floor(budget.remaining / LOCAL_SUBJECT_METADATA_OVERHEAD_BYTES)) throw new SafeError("QUERY_TOO_LARGE", "The Unicode subject search metadata is too complex.");
     if (value instanceof Date) return;
-    if (value instanceof Set) { for (const item of value) chargeLocalMetadata(item, budget, seen, depth + 1); return; }
-    if (value instanceof Map) { for (const [key, item] of value) { chargeLocalMetadata(key, budget, seen, depth + 1); chargeLocalMetadata(item, budget, seen, depth + 1); } return; }
     for (const key in value) {
       if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-      charge(64 + key.length * 2);
+      chargeLocalBytes(budget, LOCAL_SUBJECT_METADATA_OVERHEAD_BYTES + key.length * 2);
       chargeLocalMetadata((value as Record<string, unknown>)[key], budget, seen, depth + 1);
     }
   } finally { seen.delete(value); }
+}
+
+function retainedAddresses(values: readonly { name?: string | undefined; address?: string | undefined }[] | undefined): Array<{ name?: string; address?: string }> | undefined {
+  return values?.map((item) => ({ ...(item.name === undefined ? {} : { name: item.name }), ...(item.address === undefined ? {} : { address: item.address }) }));
+}
+
+function retainedReferences(envelope: MessageEnvelopeObject | undefined): string[] | undefined {
+  const raw = (envelope as (MessageEnvelopeObject & { references?: unknown }) | undefined)?.references;
+  const values = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+  const bounded = values.filter((item): item is string => typeof item === "string").slice(0, LOCAL_SUBJECT_MAX_RETAINED_REFERENCES);
+  return bounded.length === 0 ? undefined : bounded;
+}
+
+/** Project one fetched message onto exactly the fields `summary` keeps, so accounting is charged
+ *  for retained metadata and not for raw FETCH members the search never stores. */
+function retainedSearchMetadata(message: FetchMessageObject): Record<string, unknown> {
+  const envelope = message.envelope;
+  const references = retainedReferences(envelope);
+  return {
+    ...(envelope?.subject === undefined ? {} : { subject: envelope.subject }),
+    ...(envelope?.messageId === undefined ? {} : { messageId: envelope.messageId }),
+    ...(envelope?.date === undefined ? {} : { date: envelope.date }),
+    ...(envelope?.from === undefined ? {} : { from: retainedAddresses(envelope.from) }),
+    ...(envelope?.to === undefined ? {} : { to: retainedAddresses(envelope.to) }),
+    ...(envelope?.cc === undefined ? {} : { cc: retainedAddresses(envelope.cc) }),
+    ...(envelope?.replyTo === undefined ? {} : { replyTo: retainedAddresses(envelope.replyTo) }),
+    ...(envelope?.inReplyTo === undefined ? {} : { inReplyTo: envelope.inReplyTo }),
+    ...(references === undefined ? {} : { references }),
+    flags: [...(message.flags ?? [])],
+    ...(message.size === undefined ? {} : { size: message.size }),
+  };
+}
+
+function chargeLocalSearchMetadata(message: FetchMessageObject, budget: LocalMetadataBudget): void {
+  chargeLocalBytes(budget, LOCAL_SUBJECT_METADATA_BASE_BYTES);
+  chargeLocalMetadata(retainedSearchMetadata(message), budget);
 }
 
 /** Provider-independent, bounded IMAP operations. No reconnect or retry is performed. */
@@ -297,7 +379,8 @@ export class ImapFlowMailAdapter implements ImapAdapter {
   private readonly maxResults: number;
   private readonly maxReadBytes: number;
   private readonly maxAttachmentDownloadBytes: number;
-  constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 101); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 4_000_000, 1), 25_000_000); this.maxAttachmentDownloadBytes = Math.min(Math.max(options.maxAttachmentDownloadBytes ?? 10_000_000, 1), 25_000_000); }
+  private readonly localSubjectScanDeadlineMs: number;
+  constructor(private readonly options: ImapFlowMailAdapterOptions) { this.endpoint = parseEndpoint(options.account.imapEndpoint); this.factory = options.clientFactory ?? ((clientOptions) => new ImapFlow(clientOptions)); this.maxResults = Math.min(Math.max(options.maxResults ?? 50, 1), 101); this.maxReadBytes = Math.min(Math.max(options.maxReadBytes ?? 4_000_000, 1), 25_000_000); this.maxAttachmentDownloadBytes = Math.min(Math.max(options.maxAttachmentDownloadBytes ?? 10_000_000, 1), 25_000_000); this.localSubjectScanDeadlineMs = Math.min(Math.max(options.localSubjectScanDeadlineMs ?? LOCAL_SUBJECT_ALL_FOLDER_DEADLINE_MS, 0), 600_000); }
 
   private selectedUidValidity(client: ImapFlowClient): number {
     const raw = (client as ImapFlowClient & { mailbox?: { uidValidity?: bigint | number } }).mailbox?.uidValidity;
@@ -317,13 +400,18 @@ export class ImapFlowMailAdapter implements ImapAdapter {
     return raw;
   }
 
-  private async searchUidsInWindows(client: ImapFlowClient, criteria: SearchObject, startUid: number, uidNext: number, maxResults: number, budget: { remaining: number }, windowSize = IMAP_UID_WINDOW_SIZE): Promise<number[]> {
+  private checkSearchDeadline(deadline: number | undefined): void {
+    if (deadline !== undefined && Date.now() >= deadline) throw new SafeError("QUERY_TOO_LARGE", `The all-folder Unicode subject search exceeded its ${this.localSubjectScanDeadlineMs} ms deadline; add a since/before date filter or search one folder at a time.`);
+  }
+
+  private async searchUidsInWindows(client: ImapFlowClient, criteria: SearchObject, startUid: number, uidNext: number, maxResults: number, budget: { remaining: number }, windowSize = IMAP_UID_WINDOW_SIZE, deadline?: number): Promise<number[]> {
     if (!Number.isSafeInteger(startUid) || startUid < 1 || startUid > IMAP_UID_MAX + 1 || !Number.isSafeInteger(maxResults) || maxResults < 1 || !Number.isSafeInteger(windowSize) || windowSize < 1 || windowSize > IMAP_THREAD_UID_WINDOW_SIZE) throw new SafeError("INVALID_INPUT", "The mailbox search range is invalid.");
     const lastUid = uidNext - 1;
     const result: number[] = [];
     let lower = startUid;
     while (lower <= lastUid && result.length < maxResults) {
       if (budget.remaining <= 0) throw new SafeError("QUERY_TOO_LARGE", "The mailbox search exceeded its bounded UID scan; narrow the query.");
+      this.checkSearchDeadline(deadline);
       budget.remaining -= 1;
       const upper = Math.min(lastUid, lower + windowSize - 1);
       const found = await client.search({ ...criteria, uid: `${lower}:${upper}` }, { uid: true });
@@ -419,15 +507,27 @@ export class ImapFlowMailAdapter implements ImapAdapter {
 
   async searchAllFolders(query: string | undefined, filters: MailSearchFilters | undefined, limit = this.maxResults, cursor?: string): Promise<MailSearchPage> {
     const bounded = Math.min(Math.max(limit, 1), this.maxResults);
-    if (filters?.subject && /[^\x00-\x7f]/.test(filters.subject)) throw new SafeError("UNSUPPORTED_OPERATION", "Unicode subject search is only supported in a single folder.");
+    const localSubject = filters?.subject && /[^\x00-\x7f]/.test(filters.subject) ? filters.subject : undefined;
     const criteria: SearchObject[] = [];
     if (query) criteria.push({ or: [{ text: query }, { subject: query }, { header: { Subject: query } }] });
-    if (filters) criteria.push(...this.searchCriteria(filters));
-    if (criteria.length === 0) throw new SafeError("INVALID_INPUT", "A search query or structured search filter is required.");
-    const search = Object.assign({}, ...criteria) as SearchObject;
+    if (filters) criteria.push(...this.searchCriteria(localSubject ? { ...filters, subject: undefined } : filters));
+    if (criteria.length === 0 && !localSubject) throw new SafeError("INVALID_INPUT", "A search query or structured search filter is required.");
+    const search = criteria.length ? Object.assign({}, ...criteria) as SearchObject : { all: true };
     const queryHash = searchHash(query, filters);
     const decodedCursor = decodeAllFolderCursor(cursor, this.options.account.accountId, queryHash);
-    const totalCandidateLimit = Math.min(Math.max(bounded * 20, 100), 2_000);
+    // Local subject matching cannot be pushed down, so every candidate has to be fetched and
+    // examined. That bound is absolute and independent of the requested page size: a whole small
+    // or medium mailbox (~10,000 messages) is supported, while the metadata and UID-window budgets
+    // still fail closed.
+    //
+    // Known cost, deliberately not changed here: every page repeats the full scan from the first
+    // folder, so paginating an all-folder local subject search is O(folders x candidates) per page
+    // and O(pages x folders x candidates) overall. Reusing candidates across pages would need
+    // cross-request state (a durable or server-side snapshot) with its own invalidation and
+    // staleness contract; the current bounds keep each page bounded, and the rescan is documented
+    // in docs/capabilities-and-limits.md.
+    const totalCandidateLimit = localSubject === undefined ? Math.min(Math.max(bounded * 20, 100), 2_000) : LOCAL_SUBJECT_ALL_FOLDER_CANDIDATE_BUDGET;
+    const deadline = localSubject === undefined ? undefined : Date.now() + this.localSubjectScanDeadlineMs;
 
     return this.withClient(async (client) => {
       const folders = [...new Set((await client.list()).filter((item) => !item.flags?.has("\\Noselect") && !item.flags?.has("\\NOSELECT")).map((item) => item.path))].sort();
@@ -435,25 +535,25 @@ export class ImapFlowMailAdapter implements ImapAdapter {
       const candidates: MailSummary[] = [];
       const generations: Array<[string, number, number]> = [];
       const searchBudget = { remaining: IMAP_ALL_FOLDER_SEARCH_WINDOW_BUDGET };
+      const metadataBudget = { remaining: LOCAL_SUBJECT_METADATA_BUDGET };
       let totalCandidates = 0;
 
       for (const folder of folders) {
+        this.checkSearchDeadline(deadline);
         const lock = await client.getMailboxLock(folder);
         try {
           const uidValidity = this.selectedUidValidity(client);
           const uidNext = this.selectedUidNext(client);
           generations.push([folder, uidValidity, uidNext]);
           const remainingCandidateCapacity = totalCandidateLimit - totalCandidates;
-          const uids = await this.searchUidsInWindows(client, search, 1, uidNext, remainingCandidateCapacity + 1, searchBudget);
-          if (uids.length > remainingCandidateCapacity) throw new SafeError("QUERY_TOO_LARGE", "The all-folder search exceeds the configured candidate bound; narrow the search.");
+          const uids = await this.searchUidsInWindows(client, search, 1, uidNext, remainingCandidateCapacity + 1, searchBudget, IMAP_UID_WINDOW_SIZE, deadline);
+          this.validateUidValidity(client, uidValidity);
+          if (this.selectedUidNext(client) !== uidNext) throw new SafeError("REFERENCE_STALE", "The mailbox UID range changed during the search.");
+          if (uids.length > remainingCandidateCapacity) throw new SafeError("QUERY_TOO_LARGE", localSubject === undefined ? "The all-folder search exceeds the configured candidate bound; narrow the search." : `The all-folder Unicode subject search examined more than ${LOCAL_SUBJECT_ALL_FOLDER_CANDIDATE_BUDGET} candidates; add a since/before date filter or search one folder at a time.`);
           totalCandidates += uids.length;
-          if (uids.length === 0) continue;
-          const expectedUids = new Set(uids);
-          for await (const message of client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true })) {
-            if (!Number.isSafeInteger(message.uid) || !expectedUids.delete(message.uid)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an unexpected or duplicate search result.");
-            candidates.push(this.summary(folder, message, uidValidity));
-          }
-          if (expectedUids.size > 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox changed while the search was running; retry the query.");
+          if (uids.length) candidates.push(...await this.fetchSearchCandidates(client, folder, uids, uidValidity, localSubject, metadataBudget, undefined, deadline));
+          this.validateUidValidity(client, uidValidity);
+          if (this.selectedUidNext(client) !== uidNext) throw new SafeError("REFERENCE_STALE", "The mailbox UID range changed during the search.");
         } finally { lock.release(); }
       }
 
@@ -475,7 +575,37 @@ export class ImapFlowMailAdapter implements ImapAdapter {
       const lastDateMs = searchDateMs(last?.date);
       const nextCursor = truncated && last ? encodeAllFolderCursor({ accountId: this.options.account.accountId, queryHash, generationHash, dateMs: Number.isFinite(lastDateMs) ? lastDateMs : null, folder: last.folder, uid: last.uid }) : undefined;
       return { messages, truncated, foldersSearched: folders.length, ...(nextCursor === undefined ? {} : { nextCursor }) };
-    });
+    }, Boolean(localSubject));
+  }
+
+  private async fetchSearchCandidates(client: ImapFlowClient, folder: string, uids: number[], uidValidity: number, localSubject: string | undefined, metadataBudget: { remaining: number }, searchUidNext?: number, deadline?: number): Promise<MailSummary[]> {
+    const remaining = new Set(uids);
+    const result: MailSummary[] = [];
+    const needle = localSubject?.normalize("NFC").toLowerCase();
+    const iterator = client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true });
+    let completed = false;
+    let processed = 0;
+    try {
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) {
+          completed = true;
+          if (next.value === false) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider failed to complete the mailbox fetch.");
+          break;
+        }
+        // The deadline is also checked mid-fetch so a large folder cannot run past the scan bound.
+        if (deadline !== undefined && (processed++ & 63) === 0) this.checkSearchDeadline(deadline);
+        const message = next.value;
+        if (!Number.isSafeInteger(message.uid) || !remaining.delete(message.uid)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an unexpected or duplicate mailbox message.");
+        if (needle !== undefined) {
+          chargeLocalSearchMetadata(message, metadataBudget);
+          if (!message.envelope || (message.envelope.subject !== undefined && typeof message.envelope.subject !== "string")) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned no valid search envelope.");
+        }
+        if (needle === undefined || (message.envelope?.subject ?? "").normalize("NFC").toLowerCase().includes(needle)) result.push({ ...this.summary(folder, message, uidValidity), ...(needle !== undefined && searchUidNext !== undefined ? { searchUidNext } : {}) });
+      }
+    } finally { if (!completed) await iterator.return(undefined); }
+    if (remaining.size) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox changed while the search was running; retry the query.");
+    return result;
   }
 
   async listMessages(folder: string, query?: string, limit = this.maxResults, afterUid?: number, expectedUidValidity?: number, filters?: MailSearchFilters, expectedUidNext?: number): Promise<readonly MailSummary[]> {
@@ -498,34 +628,9 @@ export class ImapFlowMailAdapter implements ImapAdapter {
         const uids = await this.searchUidsInWindows(client, base, afterUid === undefined ? 1 : afterUid + 1, uidNext, localSubject ? 2001 : bounded, { remaining: IMAP_UID_SEARCH_WINDOW_BUDGET });
         this.validateUidValidity(client, uidValidity);
         if (localSubject && uids.length > 2000) throw new SafeError("QUERY_TOO_LARGE", "The Unicode subject search exceeds the candidate bound; narrow the search.");
-        const remaining = new Set(uids);
-        const result: MailSummary[] = [];
-        const metadataBudget = { remaining: LOCAL_SUBJECT_METADATA_BUDGET };
-        if (uids.length) {
-          const iterator = client.fetch(uids, { uid: true, envelope: true, flags: true, internalDate: true, size: true }, { uid: true });
-          let completed = false;
-          try {
-            while (true) {
-              const next = await iterator.next();
-              if (next.done) {
-                completed = true;
-                if (next.value === false) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider failed to complete the mailbox fetch.");
-                break;
-              }
-              const message = next.value;
-              if (!Number.isSafeInteger(message.uid) || !remaining.delete(message.uid)) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned an unexpected or duplicate mailbox message.");
-              if (localSubject) chargeLocalMetadata(message, metadataBudget);
-              if (localSubject && !message.envelope) throw new SafeError("PROVIDER_UNAVAILABLE", "The provider returned no search envelope.");
-              // NFC plus Unicode lowercase, preserving accents; this is not full case folding.
-              if (!localSubject || (message.envelope?.subject ?? "").normalize("NFC").toLowerCase().includes(localSubject.normalize("NFC").toLowerCase())) result.push({ ...this.summary(folder, message, uidValidity), ...(localSubject ? { searchUidNext: uidNext } : {}) });
-            }
-          } finally {
-            if (!completed) await iterator.return(undefined);
-          }
-        }
+        const result = uids.length ? await this.fetchSearchCandidates(client, folder, uids, uidValidity, localSubject, { remaining: LOCAL_SUBJECT_METADATA_BUDGET }, uidNext) : [];
         this.validateUidValidity(client, uidValidity);
         if (localSubject && this.selectedUidNext(client) !== uidNext) throw new SafeError("REFERENCE_STALE", "The mailbox UID range changed during the search.");
-        if (remaining.size > 0) throw new SafeError("PROVIDER_UNAVAILABLE", "The mailbox changed while the search page was being fetched; retry the query.");
         return result.sort((a, b) => a.uid - b.uid).slice(0, bounded);
       } finally { lock.release(); }
     }, Boolean(filters?.subject && /[^\x00-\x7f]/.test(filters.subject)));

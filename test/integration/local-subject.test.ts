@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fixture } from "../helpers.js";
 import { MailGatewayService } from "../../src/application/service.js";
+import { SafeError } from "../../src/errors.js";
 import { ImapFlowMailAdapter, FakeSmtpAdapter, type ImapFlowClient } from "../../src/mail/adapters.js";
 
 function setup(subjects: string[], options: { reverse?: boolean; missing?: boolean; duplicate?: boolean; stale?: boolean; fetchFails?: boolean; uidNext?: number; metadata?: (uid: number) => object } = {}) {
@@ -10,7 +11,7 @@ function setup(subjects: string[], options: { reverse?: boolean; missing?: boole
   const client: ImapFlowClient & { mailbox: { uidValidity: bigint; uidNext: number } } = {
     mailbox: { uidValidity: 7n, uidNext: options.uidNext ?? subjects.length + 1 },
     connect: async () => {}, logout: async () => {}, close: () => {},
-    list: async () => [], getMailboxLock: async () => ({ release: () => {} }),
+    list: async () => [{ path: "Inbox", pathAsListed: "Inbox", name: "Inbox", delimiter: "/", parent: [], parentPath: "", flags: new Set<string>(), listed: true, subscribed: true }], getMailboxLock: async () => ({ release: () => {} }),
     search: async (criteria) => {
       searches.push(criteria);
       const [lo, hi] = String(criteria.uid).split(":").map(Number);
@@ -46,18 +47,21 @@ test("parser limits apply only to Unicode subject connections", async () => {
 });
 
 test("unicode subject bounds aggregate fetched metadata even for nonmatches", async () => {
-  const b = setup(Array(12).fill("other"), { metadata: () => ({ envelope: { subject: "other", from: [{ name: "x".repeat(800_000) }] } }) });
+  // 600 messages x a 32,000-character retained address name (~64 KB each) exceed the 32 MiB scan
+  // budget even though no message matches the Unicode subject.
+  const b = setup(Array(600).fill("other"), { metadata: () => ({ envelope: { subject: "other", from: [{ name: "x".repeat(32_000) }] } }) });
   try { await assert.rejects(b.adapter.searchWithFilters("Inbox", undefined, { subject: "reunión" }), { code: "QUERY_TOO_LARGE" }); }
   finally { b.db.close(); }
 });
 
-test("unicode subject rejects oversized single messages and flag metadata", async () => {
+test("unicode subject rejects a single oversized retained header value", async () => {
   for (const metadata of [
-    () => ({ envelope: { subject: "reunión", from: [{ name: "x".repeat(4_194_305) }] } }),
-    () => ({ flags: new Set(["x".repeat(4_194_305)]) }),
+    () => ({ envelope: { subject: "reunión", from: [{ name: "x".repeat(70_000) }] } }),
+    () => ({ envelope: { subject: "reunión " + "x".repeat(70_000) } }),
+    () => ({ flags: new Set(["x".repeat(70_000)]) }),
   ]) {
     const b = setup(["reunión"], { metadata });
-    try { await assert.rejects(b.adapter.searchWithFilters("Inbox", undefined, { subject: "reunión" }), { code: "QUERY_TOO_LARGE" }); }
+    try { await assert.rejects(b.adapter.searchWithFilters("Inbox", undefined, { subject: "reunión" }), (error: unknown) => error instanceof SafeError && error.code === "QUERY_TOO_LARGE" && /too large/.test(error.message)); }
     finally { b.db.close(); }
   }
 });
@@ -100,10 +104,30 @@ test("unicode subject rejects incomplete fetch", async () => {
   finally { b.db.close(); }
 });
 
-test("unicode subject fails closed for all folders", async () => {
-  const b = setup([]);
-  try { await assert.rejects(b.adapter.searchAllFolders(undefined, { subject: "reunión" }), { code: "UNSUPPORTED_OPERATION" }); }
-  finally { b.db.close(); }
+test("all-folder unicode subject matches normalized accents and preserves filters", async () => {
+  const b = setup(["other", "REUNIO\u0301N", "reunion", "reunión final"], { reverse: true });
+  try {
+    const page = await b.adapter.searchAllFolders(undefined, { subject: "reunión", from: "person@example.test", isRead: true }, 2);
+    assert.deepEqual(page.messages.map(m => m.uid), [4, 2]);
+    assert.deepEqual(b.searches[0], { from: "person@example.test", seen: true, uid: "1:4" });
+    assert.equal(b.clientOptions[0]?.maxResponseSize, 1024 * 1024);
+  } finally { b.db.close(); }
+});
+
+test("all-folder unicode subject fails closed on malformed or incomplete fetches", async () => {
+  for (const options of [{ missing: true }, { duplicate: true }, { fetchFails: true }, { stale: true }, { metadata: () => ({ envelope: undefined }) }]) {
+    const b = setup(["reunión"], options);
+    try { await assert.rejects(b.adapter.searchAllFolders(undefined, { subject: "reunión" }), { code: options.stale ? "REFERENCE_STALE" : "PROVIDER_UNAVAILABLE" }); }
+    finally { b.db.close(); }
+  }
+});
+
+test("all-folder unicode subject enforces candidate, window and metadata bounds", async () => {
+  // The absolute candidate bound is 10,000 examined messages, independent of the requested page size.
+  for (const b of [setup(Array(10_001).fill("other")), setup([], { uidNext: 100_000_000 }), setup(["other"], { metadata: () => ({ envelope: { subject: "other", from: [{ name: "x".repeat(70_000) }] } }) })]) {
+    try { await assert.rejects(b.adapter.searchAllFolders(undefined, { subject: "reunión" }, 2), { code: "QUERY_TOO_LARGE" }); }
+    finally { b.db.close(); }
+  }
 });
 
 
